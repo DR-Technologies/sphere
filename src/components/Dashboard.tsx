@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
 import {
-    getDatasets, uploadFile, saveDataset, SavedDataset,
+    getDatasets, uploadDatasetAssets, saveDataset, SavedDataset, syncNormalizedDataset,
     getReports, SavedReport, deleteDataset, updateReportName,
     checkDatasetLimit, deleteReport
 } from '@/lib/persistence';
@@ -188,16 +188,24 @@ function DashboardContent() {
             setDataset(datasetData);
 
             if (user) {
-                const url = await uploadFile(file, user.id);
-                if (url) {
+                const uploadedAssets = await uploadDatasetAssets(file, user.id, profile.artifacts);
+                if (uploadedAssets.fileUrl) {
                     const savedDs = await saveDataset({
                         user_id: user.id,
                         name: datasetName,
-                        file_url: url,
+                        file_url: uploadedAssets.fileUrl,
+                        normalized_file_url: uploadedAssets.normalizedFileUrl || undefined,
+                        analytics_manifest_url: uploadedAssets.analyticsManifestUrl || undefined,
                         sheet_name: sheetName,
                         columns: profile.columns,
                         stats: profile.stats
                     });
+                    if (profile.artifacts?.normalizedRows?.length) {
+                        const normalizedTableName = await syncNormalizedDataset(savedDs.id, profile.columns, profile.artifacts.normalizedRows);
+                        if (normalizedTableName) {
+                            savedDs.normalized_table_name = normalizedTableName;
+                        }
+                    }
                     setDataset({ id: savedDs.id, name: datasetName, ...profile });
                     fetchSavedDatasets(user.id);
                 }
@@ -217,7 +225,10 @@ function DashboardContent() {
         setIsProfiling(true);
         setStep('profiling');
         try {
-            const profile = await profileFromUrl(saved.file_url, saved.name, saved.sheet_name);
+            const profile = await profileFromUrl(saved.file_url, saved.name, saved.sheet_name, {
+                normalizedFileUrl: saved.normalized_file_url,
+                analyticsManifestUrl: saved.analytics_manifest_url
+            });
             setDataset({ id: saved.id, name: saved.name, ...profile });
         } catch (err) {
             console.error('Error loading saved dataset:', err);
@@ -240,7 +251,10 @@ function DashboardContent() {
             }
             if (!ds) throw new Error('Dataset no encontrado');
 
-            const profile = await profileFromUrl(ds.file_url, ds.name, ds.sheet_name);
+            const profile = await profileFromUrl(ds.file_url, ds.name, ds.sheet_name, {
+                normalizedFileUrl: ds.normalized_file_url,
+                analyticsManifestUrl: ds.analytics_manifest_url
+            });
             setDataset({ id: ds.id, name: ds.name, ...profile });
 
             // 2. Switch to canvas

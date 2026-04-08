@@ -30,7 +30,7 @@ interface Widget {
     longitudeField?: string;
 }
 
-function PublicWidget({ widget, isInitialized, columnsMeta }: { widget: Widget, isInitialized: boolean, columnsMeta: { name: string; type: string }[] }) {
+function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widget: Widget, isInitialized: boolean, columnsMeta: { name: string; type: string }[], datasetId: string }) {
     const [data, setData] = useState<Record<string, any>[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -115,7 +115,7 @@ function PublicWidget({ widget, isInitialized, columnsMeta }: { widget: Widget, 
                     `;
                 }
 
-                const result = await runQuery(query);
+                const result = await runQuery(query, { datasetId });
                 setData(result);
             } catch (err: unknown) {
                 console.error('Error fetching widget data:', err);
@@ -126,7 +126,7 @@ function PublicWidget({ widget, isInitialized, columnsMeta }: { widget: Widget, 
         };
 
         fetchData();
-    }, [widget, isInitialized]);
+    }, [widget, isInitialized, datasetId]);
 
     return (
         <div className="glass glass-card" style={{ padding: '24px', height: '100%', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }}>
@@ -191,7 +191,10 @@ export default function ReportPage() {
                 const dataset = await getDatasetById(reportData.dataset_id);
                 if (dataset) {
                     setDatasetColumns(dataset.columns || []);
-                    await profileFromUrl(dataset.file_url, dataset.name, dataset.sheet_name);
+                    await profileFromUrl(dataset.file_url, dataset.name, dataset.sheet_name, {
+                        normalizedFileUrl: dataset.normalized_file_url,
+                        analyticsManifestUrl: dataset.analytics_manifest_url
+                    });
                     setIsInitialized(true);
                 } else {
                     setError('Dataset no encontrado');
@@ -316,7 +319,7 @@ export default function ReportPage() {
                     >
                         {report.widgets.map((widget: Widget) => (
                             <div key={widget.id}>
-                                <PublicWidget widget={widget} isInitialized={isInitialized} columnsMeta={datasetColumns} />
+                                <PublicWidget widget={widget} isInitialized={isInitialized} columnsMeta={datasetColumns} datasetId={report.dataset_id} />
                             </div>
                         ))}
                     </ResponsiveGridLayout>

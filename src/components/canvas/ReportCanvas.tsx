@@ -167,7 +167,7 @@ const WidgetCard = React.memo(({
                         ${limitClause}
                     `;
                 }
-                const result = await runQuery(query);
+                const result = await runQuery(query, { datasetId: dataset.id });
 
                 // Check if result is all nulls (often happens if TRY_CAST fails for all rows)
                 const allNulls = result.length > 0 && result.every(row => row[widget.yAxis] === null);

@@ -5,6 +5,9 @@ export interface SavedDataset {
     user_id: string;
     name: string;
     file_url: string;
+    normalized_file_url?: string;
+    analytics_manifest_url?: string;
+    normalized_table_name?: string;
     columns: { name: string; type: string }[];
     stats: {
         column: string;
@@ -53,6 +56,94 @@ export async function uploadFile(file: File, userId: string): Promise<string | n
     return publicUrl;
 }
 
+export function deriveDatasetArtifactUrls(rawFileUrl: string) {
+    const lastDot = rawFileUrl.lastIndexOf('.');
+    if (lastDot === -1) return null;
+
+    return {
+        normalized_file_url: `${rawFileUrl.slice(0, lastDot)}__normalized.csv`,
+        analytics_manifest_url: `${rawFileUrl.slice(0, lastDot)}__analytics.json`
+    };
+}
+
+export async function uploadDatasetAssets(
+    file: File,
+    userId: string,
+    artifacts?: { normalizedCsv: string; manifest: unknown }
+): Promise<{ fileUrl: string | null; normalizedFileUrl?: string | null; analyticsManifestUrl?: string | null }> {
+    const fileExt = file.name.split('.').pop();
+    const baseName = Math.random().toString(36).substring(2);
+    const rawPath = `${userId}/datasets/${baseName}.${fileExt}`;
+
+    const { error: rawUploadError } = await supabase.storage
+        .from('files')
+        .upload(rawPath, file);
+
+    if (rawUploadError) {
+        console.error('Error uploading file:', rawUploadError.message);
+        return { fileUrl: null };
+    }
+
+    const { data: { publicUrl: fileUrl } } = supabase.storage
+        .from('files')
+        .getPublicUrl(rawPath);
+
+    let normalizedFileUrl: string | null = null;
+    let analyticsManifestUrl: string | null = null;
+
+    if (artifacts) {
+        const normalizedPath = `${userId}/datasets/${baseName}__normalized.csv`;
+        const manifestPath = `${userId}/datasets/${baseName}__analytics.json`;
+
+        const { error: normalizedUploadError } = await supabase.storage
+            .from('files')
+            .upload(normalizedPath, new Blob([artifacts.normalizedCsv], { type: 'text/csv;charset=utf-8' }), {
+                contentType: 'text/csv',
+                upsert: true
+            });
+
+        if (normalizedUploadError) {
+            console.warn('Failed to upload normalized dataset artifact:', normalizedUploadError.message);
+        } else {
+            normalizedFileUrl = supabase.storage.from('files').getPublicUrl(normalizedPath).data.publicUrl;
+        }
+
+        const { error: manifestUploadError } = await supabase.storage
+            .from('files')
+            .upload(manifestPath, new Blob([JSON.stringify(artifacts.manifest, null, 2)], { type: 'application/json;charset=utf-8' }), {
+                contentType: 'application/json',
+                upsert: true
+            });
+
+        if (manifestUploadError) {
+            console.warn('Failed to upload analytics manifest artifact:', manifestUploadError.message);
+        } else {
+            analyticsManifestUrl = supabase.storage.from('files').getPublicUrl(manifestPath).data.publicUrl;
+        }
+    }
+
+    return { fileUrl, normalizedFileUrl, analyticsManifestUrl };
+}
+
+export async function syncNormalizedDataset(
+    datasetId: string,
+    columns: { name: string; type: string }[],
+    rows: Record<string, any>[]
+): Promise<string | null> {
+    const { data, error } = await supabase.rpc('sync_normalized_dataset', {
+        p_dataset_id: datasetId,
+        p_columns: columns,
+        p_rows: rows
+    });
+
+    if (error) {
+        console.warn('Failed to sync normalized dataset into Postgres analytics storage:', error.message);
+        return null;
+    }
+
+    return typeof data === 'string' ? data : null;
+}
+
 /**
  * Sanitizes an object to be JSON-safe by converting BigInt to Number
  */
@@ -75,7 +166,7 @@ function sanitizeForJSON(obj: unknown): any {
  */
 export async function saveDataset(dataset: Omit<SavedDataset, 'id' | 'created_at'>) {
     const sanitizedDataset = sanitizeForJSON(dataset);
-    const { sheet_name, ...metadataWithoutSheet } = sanitizedDataset;
+    const { sheet_name, normalized_file_url, analytics_manifest_url, ...metadataWithoutOptionalColumns } = sanitizedDataset;
     
     // We try to save with sheet_name, but if it fails we fall back to saving without it
     // to avoid breaking the entire flow if the DB column isn't ready yet.
@@ -86,10 +177,10 @@ export async function saveDataset(dataset: Omit<SavedDataset, 'id' | 'created_at
         .single();
 
     if (error && error.code === 'PGRST204') {
-        console.warn('Column sheet_name not found in datasets table. Falling back to save without it.');
+        console.warn('Some optional columns were not found in datasets table. Falling back to save without them.');
         const { data: retryData, error: retryError } = await supabase
             .from('datasets')
-            .insert([metadataWithoutSheet])
+            .insert([metadataWithoutOptionalColumns])
             .select()
             .single();
         
@@ -237,7 +328,12 @@ export async function deleteDataset(datasetId: string, fileUrl: string, userId: 
     try {
         const path = fileUrl.split('/storage/v1/object/public/files/')[1];
         if (path) {
-            await supabase.storage.from('files').remove([path]);
+            const extensionIndex = path.lastIndexOf('.');
+            const basePath = extensionIndex === -1 ? path : path.slice(0, extensionIndex);
+            const derivedPaths = extensionIndex === -1
+                ? [path]
+                : [path, `${basePath}__normalized.csv`, `${basePath}__analytics.json`];
+            await supabase.storage.from('files').remove(derivedPaths);
         }
     } catch (err) {
         console.warn('Failed to delete file from storage:', err);
