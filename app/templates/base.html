@@ -1,0 +1,239 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <title>{% block title %}Cubo{% endblock %}</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#2563eb',
+            secondary: '#64748b',
+            sidebar: '#ffffff',
+            background: '#f9fafb',
+            grayline: 'rgba(0,0,0,0.05)',
+          },
+          boxShadow: {
+            soft: "0 3px 12px rgba(0,0,0,0.06)",
+          },
+          borderRadius: {
+            xl2: "14px"
+          }
+        }
+      }
+    }
+  </script>
+
+
+  <!-- Bloque opcional para que cada página añada <head> extra (ej. CSS, meta tags) -->
+  {% block extra_head %}{% endblock %}
+
+  <style>
+    .glass {
+      background: rgba(255, 255, 255, 0.55);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.07);
+    }
+
+    .glass-dark {
+      background: rgba(24, 24, 27, 0.4);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      box-shadow: 0 4px 26px rgba(0, 0, 0, 0.35);
+    }
+
+    .smooth {
+      transition: all 0.3s ease;
+    }
+
+    /* Tooltips tipo Linear */
+    .tooltip {
+      position: absolute;
+      left: 70px;
+      opacity: 0;
+      white-space: nowrap;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.75);
+      color: white;
+      transition: opacity .2s;
+      pointer-events: none;
+    }
+
+    .nav-item:hover .tooltip {
+      opacity: 1;
+    }
+  </style>
+
+</head>
+
+<body class="flex bg-background text-gray-800 min-h-screen overflow-x-hidden">
+  <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+
+  <!-- Sidebar -->
+  <aside id="sidebar"
+    class="smooth glass fixed left-0 top-0 h-full w-64 border-r border-white/20 flex flex-col flex-shrink-0 z-40">
+    <div class="p-6 flex items-center justify-between">
+      <span class="text-2xl font-bold text-primary sidebar-text">Cubo</span>
+      <button id="toggleSidebar" class="text-gray-500 hover:text-primary focus:outline-none">
+        ☰
+      </button>
+    </div>
+
+    <nav class="flex-1 space-y-1 px-4">
+      <a href="/"
+        class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-blue-50 hover:text-primary transition">
+        <span class="text-xl">🏠</span>
+        <span class="sidebar-text">Inicio</span>
+      </a>
+      <a href="/datasets/"
+        class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-blue-50 hover:text-primary transition">
+        <span class="text-xl">📁</span>
+        <span class="sidebar-text">Mis datasets</span>
+      </a>
+      <a href="/datasets/upload/"
+        class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-blue-50 hover:text-primary transition">
+        <span class="text-xl">⬆️</span>
+        <span class="sidebar-text">Subir dataset</span>
+      </a>
+      {% if user.is_authenticated %}
+      <form method="post" action="/accounts/logout/">
+        {% csrf_token %}
+        <button type="submit" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg
+                  text-secondary hover:bg-red-50 hover:text-red-600 transition
+                  bg-transparent border-0 text-left cursor-pointer">
+
+          <span class="text-xl">🚪</span>
+          <span class="sidebar-text">Salir</span>
+        </button>
+      </form>
+      {% endif %}
+
+
+    </nav>
+
+    <footer class="text-center text-xs text-gray-400 py-4 border-t border-gray-100 sidebar-text">
+      Cubo — DR Services © {{ now|date:"Y" }}
+    </footer>
+  </aside>
+
+  <!-- Contenido principal -->
+  <div id="mainContent" class="flex-1 flex flex-col min-w-0 overflow-y-auto pl-64">
+    <!-- Topbar -->
+    <header
+      class="fixed top-0 left-64 right-0 bg-white border-b border-gray-200 h-14 flex justify-between items-center px-6 z-30">
+      <h1 class="font-semibold text-gray-700">Panel</h1>
+      <div>
+        {% if user.is_authenticated %}
+        <span class="text-sm text-gray-600 mr-3">
+          Hola, {{ user.first_name|default:user.username }}
+        </span>
+
+        <form method="post" action="/accounts/logout/" class="inline">
+          {% csrf_token %}
+          <button type="submit" class="text-red-500 hover:underline text-sm bg-transparent border-0 cursor-pointer p-0">
+            Salir
+          </button>
+        </form>
+        {% else %}
+        <a href="{% url 'account_login' %}"
+          class="bg-primary text-white text-sm px-4 py-1.5 rounded hover:bg-blue-700 transition">
+          Ingresar con Google
+        </a>
+        {% endif %}
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main class="flex-1 p-8 overflow-x-hidden pt-28">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+  <!-- Script para expandir/contraer y Toasts -->
+  <script>
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      const bgColor = type === 'success' ? 'bg-green-600' : 'bg-red-600';
+
+      toast.className = `${bgColor} text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 transform translate-y-10 opacity-0 transition-all duration-300`;
+      toast.innerHTML = `
+          <span>${type === 'success' ? '✅' : '❌'}</span>
+          <span class="font-medium">${message}</span>
+        `;
+
+      container.appendChild(toast);
+
+      // Animación entrada
+      setTimeout(() => {
+        toast.classList.remove('translate-y-10', 'opacity-0');
+      }, 10);
+
+      // Auto eliminar
+      setTimeout(() => {
+        toast.classList.add('translate-y-10', 'opacity-0');
+        setTimeout(() => toast.remove(), 300);
+      }, 3000);
+    }
+
+    const sidebar = document.getElementById('sidebar');
+    const toggleBtn = document.getElementById('toggleSidebar');
+    const texts = document.querySelectorAll('.sidebar-text');
+    const tooltips = document.querySelectorAll('.tooltip');
+    const mainContent = document.getElementById("mainContent");
+    const topbar = document.querySelector("header");
+
+    toggleBtn.addEventListener('click', () => {
+      const isCollapsed = sidebar.classList.toggle('w-20');
+      sidebar.classList.toggle('w-64', !isCollapsed);
+
+      // Ocultar textos
+      texts.forEach(t => t.classList.toggle('hidden'));
+
+      // Tooltips
+      if (isCollapsed) {
+        tooltips.forEach(t => t.classList.remove("hidden"));
+      } else {
+        tooltips.forEach(t => t.classList.add("hidden"));
+      }
+
+      // Ajustar contenido principal y topbar
+      if (isCollapsed) {
+        mainContent.classList.remove("pl-64");
+        mainContent.classList.add("pl-20");
+
+        topbar.classList.remove("left-64");
+        topbar.classList.add("left-20");
+      } else {
+        mainContent.classList.remove("pl-20");
+        mainContent.classList.add("pl-64");
+
+        topbar.classList.remove("left-20");
+        topbar.classList.add("left-64");
+      }
+    });
+  </script>
+
+
+  <!-- Chart.js: cargado globalmente para que los templates hijos puedan usarlo -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Bloque opcional para scripts por página (p.ej. el script que crea/recarga un chart) -->
+  {% block extra_scripts %}{% endblock %}
+
+</body>
+
+</html>

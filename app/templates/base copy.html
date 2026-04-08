@@ -1,0 +1,124 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8">
+    <title>{% block title %}Cubo{% endblock %}</title>
+
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#2563eb',
+              secondary: '#64748b',
+              sidebar: '#ffffff',
+              background: '#f9fafb'
+            }
+          }
+        }
+      }
+    </script>
+
+    <!-- Bloque opcional para que cada página añada <head> extra (ej. CSS, meta tags) -->
+    {% block extra_head %}{% endblock %}
+
+    <style>
+      /* transición suave */
+      .transition-width {
+        transition: width 0.3s ease;
+      }
+    </style>
+  </head>
+  <body class="flex bg-background text-gray-800 min-h-screen overflow-x-hidden">
+
+    <!-- Sidebar -->
+    <aside id="sidebar"
+           class="transition-all duration-300 fixed left-0 top-0 h-full w-64 bg-sidebar border-r border-gray-200 flex flex-col flex-shrink-0 z-40">
+      <div class="p-6 flex items-center justify-between">
+        <span class="text-2xl font-bold text-primary sidebar-text">Cubo</span>
+        <button id="toggleSidebar"
+                class="text-gray-500 hover:text-primary focus:outline-none">
+          ☰
+        </button>
+      </div>
+
+      <nav class="flex-1 space-y-1 px-4">
+        <a href="/"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-blue-50 hover:text-primary transition">
+          <span class="text-xl">🏠</span>
+          <span class="sidebar-text">Inicio</span>
+        </a>
+        <a href="/datasets/"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-blue-50 hover:text-primary transition">
+          <span class="text-xl">📁</span>
+          <span class="sidebar-text">Mis datasets</span>
+        </a>
+        <a href="/datasets/upload/"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-blue-50 hover:text-primary transition">
+          <span class="text-xl">⬆️</span>
+          <span class="sidebar-text">Subir dataset</span>
+        </a>
+
+        {% if user.is_authenticated %}
+        <a href="/accounts/logout/"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg text-secondary hover:bg-red-50 hover:text-red-600 transition">
+          <span class="text-xl">🚪</span>
+          <span class="sidebar-text">Salir</span>
+        </a>
+        {% endif %}
+      </nav>
+
+      <footer class="text-center text-xs text-gray-400 py-4 border-t border-gray-100 sidebar-text">
+        Cubo — DR Services © {{ now|date:"Y" }}
+      </footer>
+    </aside>
+
+    <!-- Contenido principal -->
+    <div id="mainContent" class="flex-1 flex flex-col min-w-0 overflow-y-auto pl-64">
+      <!-- Topbar -->
+      <header class="fixed top-0 left-64 right-0 bg-white border-b border-gray-200 h-14 flex justify-between items-center px-6 z-30">
+        <h1 class="font-semibold text-gray-700">Panel</h1>
+        <div>
+          {% if user.is_authenticated %}
+            <span class="text-sm text-gray-600 mr-3">Hola, {{ user.first_name|default:user.username }}</span>
+            <a href="/accounts/logout/" class="text-red-500 hover:underline text-sm">Salir</a>
+          {% else %}
+            <a href="/accounts/google/login/"
+               class="bg-primary text-white text-sm px-4 py-1.5 rounded hover:bg-blue-700 transition">
+               Ingresar con Google
+            </a>
+          {% endif %}
+        </div>
+      </header>
+
+      <!-- Main -->
+      <main class="flex-1 p-8 overflow-x-hidden pt-28">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+    <!-- Script para expandir/contraer -->
+    <script>
+      const sidebar = document.getElementById('sidebar');
+      const toggleBtn = document.getElementById('toggleSidebar');
+      const texts = document.querySelectorAll('.sidebar-text');
+
+      toggleBtn.addEventListener('click', () => {
+        const isCollapsed = sidebar.classList.toggle('w-20');
+        sidebar.classList.toggle('w-64', !isCollapsed);
+        texts.forEach(t => t.classList.toggle('hidden'));
+      });
+    </script>
+
+    <!-- Chart.js: cargado globalmente para que los templates hijos puedan usarlo -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Bloque opcional para scripts por página (p.ej. el script que crea/recarga un chart) -->
+    {% block extra_scripts %}{% endblock %}
+
+  </body>
+</html>
