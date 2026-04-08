@@ -1,0 +1,89 @@
+{
+  "sidebar": {
+    "home": "Inicio",
+    "datasets": "Mis datasets",
+    "reports": "Mis reportes",
+    "upload": "Subir dataset",
+    "settings": "Configuración",
+    "logout": "Salir"
+  },
+  "auth": {
+    "welcome": "Bienvenido de nuevo",
+    "welcome_sub": "Transforma tus datos en reportes visuales e interactivos en segundos.",
+    "features": {
+      "formats": "CSV / Excel",
+      "speed": "DuckDB Speed",
+      "visuals": "Visualizations"
+    }
+  },
+  "dashboard": {
+    "welcome": "Hola",
+    "welcome_sub": "Bienvenido a tu panel de control de Sphere.",
+    "new_dataset": "Nuevo Dataset",
+    "new_dataset_sub": "Sube un archivo para empezar el análisis.",
+    "explore_data": "Explorar Datos",
+    "explore_data_sub": "Mira tus datasets cargados previamente.",
+    "recent_reports": "Reportes Recientes",
+    "my_datasets": "Mis Datasets",
+    "my_datasets_sub": "Gestiona todos los datos que has subido a la plataforma.",
+    "my_reports": "Mis Reportes",
+    "my_reports_sub": "Vuelve a tus visualizaciones guardadas.",
+    "no_datasets": "No hay datasets aún",
+    "no_reports": "No tienes reportes guardados",
+    "no_reports_sub": "Empieza por subir un dataset y crear visualizaciones.",
+    "start_now": "Empezar ahora"
+  },
+  "canvas": {
+    "save": "Guardar",
+    "save_report": "Guardar Reporte",
+    "save_as": "Guardar como...",
+    "settings": "Configuración",
+    "report_settings": "Ajustes de Reporte",
+    "saved_at": "Guardado a las",
+    "temporary_dataset": "Este dataset es temporal y no se puede guardar.",
+    "delete_report": "Eliminar Reporte",
+    "fields": "Campos",
+    "visualizations": "Visualizaciones",
+    "visuals": {
+      "bar": "Columna/Barra",
+      "line": "Línea",
+      "pie": "Circular (Pie)",
+      "area": "Área",
+      "treemap": "TreeMap",
+      "table": "Tabla",
+      "card": "Card",
+      "map": "Mapa"
+    },
+    "filters": "Filtros",
+    "filters_config": "Configuración de Filtros",
+    "filter_bar_empty": "Arrastra campos aquí para filtrar todo...",
+    "active_filters": "Filtros Activos",
+    "all": "Todos",
+    "no_widgets": "No hay widgets aún. Agrega uno desde la barra lateral.",
+    "add_widget": "Agregar Widget",
+    "confirm_delete": "¿Estás seguro de que deseas eliminar este reporte? Esta acción no se puede deshacer.",
+    "limit_reached": "Límite de 9 widgets por reporte alcanzado.",
+    "report_name_prompt": "Ingresa un nombre para el reporte:",
+    "report_name_required": "El nombre del reporte es obligatorio.",
+    "copy_url": "Copiar URL",
+    "view_url": "URL de visualización",
+    "public_url_note": "Esta URL permite visualizar el reporte de forma pública sin capacidad de edición."
+  },
+  "settings": {
+    "title": "Configuración",
+    "language": "Idioma de la interfaz",
+    "select_language": "Cambia el idioma de la interfaz. La selección se guardará automáticamente.",
+    "english": "English",
+    "spanish": "Español"
+  },
+  "common": {
+    "open": "Abrir",
+    "delete": "Eliminar",
+    "rename": "Cambiar nombre",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "loading": "Cargando...",
+    "save": "Guardar",
+    "close": "Cerrar"
+  }
+}

@@ -1,0 +1,885 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
+
+import {
+    getDatasets, uploadFile, saveDataset, SavedDataset,
+    getReports, SavedReport, deleteDataset, updateReportName,
+    checkDatasetLimit, deleteReport
+} from '@/lib/persistence';
+import { profileFile, profileFromUrl, getExcelSheetNames } from '@/lib/profiler';
+import { User } from '@supabase/supabase-js';
+import DashboardLayout from './layout/DashboardLayout';
+import FileDropzone from '@/components/upload/FileDropzone';
+import DataTable from '@/components/ui/DataTable';
+import ReportCanvas from './canvas/ReportCanvas';
+import LoginView from './auth/LoginView';
+import ThreeDotMenu from './ui/ThreeDotMenu';
+import { ArrowRight, Activity as SphereIcon, Database, FileText, Plus, Edit2, ExternalLink, Trash2, Hash, ALargeSmall, Calendar } from 'lucide-react';
+import { LanguageProvider, useTranslation } from '@/lib/i18n/LanguageContext';
+import SettingsView from './layout/SettingsView';
+import { formatDate } from '@/lib/dateUtils';
+
+type ViewState = 'home' | 'datasets' | 'upload' | 'reports' | 'settings';
+
+function DashboardContent() {
+    const { t } = useTranslation();
+    const [activeView, setActiveView] = useState<ViewState>('home');
+    const [step, setStep] = useState<'main' | 'profiling' | 'canvas'>('main');
+    const [dataset, setDataset] = useState<any>(null);
+    const [isProfiling, setIsProfiling] = useState(false);
+    const [user, setUser] = useState<User | null | undefined>(undefined);
+    const [savedDatasets, setSavedDatasets] = useState<SavedDataset[]>([]);
+    const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
+    const [isLoadingSaved, setIsLoadingSaved] = useState(false);
+    const [previewView, setPreviewView] = useState<'stats' | 'preview'>('preview');
+    const [initialReportId, setInitialReportId] = useState<string | null>(null);
+    const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+    const [showConfirmModal, setShowConfirmModal] = useState(false);
+    const [pendingNavigation, setPendingNavigation] = useState<{ view?: ViewState, step?: 'main' | 'profiling' | 'canvas' } | null>(null);
+    const [pendingExcelFile, setPendingExcelFile] = useState<File | null>(null);
+    const [availableSheets, setAvailableSheets] = useState<string[]>([]);
+    const [selectedSheet, setSelectedSheet] = useState<string>('');
+    const canvasRef = React.useRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string } | null>(null);
+
+    const handleViewChange = (view: ViewState) => {
+        if (hasUnsavedChanges) {
+            setPendingNavigation({ view, step: 'main' });
+            setShowConfirmModal(true);
+            return;
+        }
+        setActiveView(view);
+        setStep('main');
+        setInitialReportId(null);
+    };
+
+    const confirmNavigation = (action: 'save' | 'saveAs' | 'discard' | 'cancel') => {
+        if (action === 'cancel') {
+            setShowConfirmModal(false);
+            setPendingNavigation(null);
+            return;
+        }
+
+        if (action === 'discard') {
+            setHasUnsavedChanges(false);
+            if (pendingNavigation) {
+                executePendingNavigation();
+            } else {
+                setStep('main');
+                setInitialReportId(null);
+                setShowConfirmModal(false);
+            }
+            return;
+        }
+
+        if (action === 'save' || action === 'saveAs') {
+            if (canvasRef.current) {
+                canvasRef.current.handleSave(action === 'saveAs').then(() => {
+                    setHasUnsavedChanges(false);
+                    if (user) fetchSavedReports(user.id); // Refresh reports after save
+                    executePendingNavigation();
+                });
+            }
+            return;
+        }
+    };
+
+    const executePendingNavigation = () => {
+        if (pendingNavigation) {
+            if (pendingNavigation.view) setActiveView(pendingNavigation.view);
+            // Default to 'main' step if not specified, crucial for exiting canvas
+            setStep(pendingNavigation.step || 'main');
+            setInitialReportId(null);
+        } else {
+            setStep('main');
+            setInitialReportId(null);
+        }
+        setShowConfirmModal(false);
+        setPendingNavigation(null);
+    };
+
+    useEffect(() => {
+        let isInitialFetch = true;
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+            console.log('Auth event:', event, !!session);
+            const currentUser = session?.user ?? null;
+
+            // Set user state
+            setUser(currentUser);
+
+            if (currentUser) {
+                if (isInitialFetch || event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+                    fetchSavedDatasets(currentUser.id);
+                    fetchSavedReports(currentUser.id);
+                    isInitialFetch = false;
+                }
+            } else if (event === 'INITIAL_SESSION' || event === 'SIGNED_OUT') {
+                setSavedDatasets([]);
+                // Wait a bit to ensure we didn't just miss a fast redirect
+                setTimeout(() => {
+                    setUser(prev => prev === undefined ? null : prev);
+                }, 600);
+            }
+        });
+
+        return () => subscription.unsubscribe();
+    }, []);
+
+    const fetchSavedDatasets = async (userId?: string) => {
+        const uid = userId || user?.id;
+        if (!uid) return;
+        setIsLoadingSaved(true);
+        const data = await getDatasets(uid);
+        setSavedDatasets(data);
+        setIsLoadingSaved(false);
+    };
+
+    const fetchSavedReports = async (userId?: string) => {
+        const uid = userId || user?.id;
+        if (!uid) return;
+        const data = await getReports(uid);
+        setSavedReports(data);
+    };
+
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
+    };
+
+    const handleFileSelect = async (file: File) => {
+        if (!user) return;
+
+        const canUpload = await checkDatasetLimit(user.id);
+        if (!canUpload) {
+            alert('Límite de datasets alcanzado (3).');
+            return;
+        }
+
+        const extension = file.name.split('.').pop()?.toLowerCase();
+        if (extension === 'xlsx' || extension === 'xls') {
+            try {
+                const sheets = await getExcelSheetNames(file);
+                if (sheets.length > 1) {
+                    setPendingExcelFile(file);
+                    setAvailableSheets(sheets);
+                    setSelectedSheet(sheets[0]);
+                    setStep('main'); // Just to be sure we are in a clean state
+                    // We'll use a new step or conditional rendering in 'upload' view
+                    setActiveView('upload'); 
+                    return;
+                }
+            } catch (err) {
+                console.error('Error reading Excel sheets:', err);
+            }
+        }
+
+        await processFile(file);
+    };
+
+    const processFile = async (file: File, sheetName?: string) => {
+        if (!user) return;
+        setIsProfiling(true);
+        setStep('profiling');
+        try {
+            const profile = await profileFile(file, sheetName);
+            const datasetName = sheetName ? `${file.name} (${sheetName})` : file.name;
+            const datasetData = { name: datasetName, ...profile };
+            setDataset(datasetData);
+
+            if (user) {
+                const url = await uploadFile(file, user.id);
+                if (url) {
+                    const savedDs = await saveDataset({
+                        user_id: user.id,
+                        name: datasetName,
+                        file_url: url,
+                        sheet_name: sheetName,
+                        columns: profile.columns,
+                        stats: profile.stats
+                    });
+                    setDataset({ id: savedDs.id, name: datasetName, ...profile });
+                    fetchSavedDatasets(user.id);
+                }
+            }
+        } catch (err) {
+            console.error('Error profiling file:', err);
+            alert('Failed to process file.');
+            setStep('main');
+        } finally {
+            setIsProfiling(false);
+            setPendingExcelFile(null);
+            setAvailableSheets([]);
+        }
+    };
+
+    const handleLoadSavedDataset = async (saved: SavedDataset) => {
+        setIsProfiling(true);
+        setStep('profiling');
+        try {
+            const profile = await profileFromUrl(saved.file_url, saved.name, saved.sheet_name);
+            setDataset({ id: saved.id, name: saved.name, ...profile });
+        } catch (err) {
+            console.error('Error loading saved dataset:', err);
+            alert('Failed to load saved dataset.');
+            setStep('main');
+        } finally {
+            setIsProfiling(false);
+        }
+    };
+
+    const handleLoadSavedReport = async (report: SavedReport) => {
+        setIsProfiling(true);
+        setStep('profiling');
+        try {
+            // 1. Find the dataset metadata
+            let ds = savedDatasets.find((d: SavedDataset) => d.id === report.dataset_id);
+            if (!ds && user) {
+                const datasets = await getDatasets(user.id);
+                ds = datasets.find((d: SavedDataset) => d.id === report.dataset_id);
+            }
+            if (!ds) throw new Error('Dataset no encontrado');
+
+            const profile = await profileFromUrl(ds.file_url, ds.name, ds.sheet_name);
+            setDataset({ id: ds.id, name: ds.name, ...profile });
+
+            // 2. Switch to canvas
+            setInitialReportId(report.id);
+            setStep('canvas');
+        } catch (err) {
+            console.error('Error loading report:', err);
+            alert('Fallo al cargar el reporte.');
+            setStep('main');
+        } finally {
+            setIsProfiling(false);
+        }
+    };
+
+    const handleDeleteDataset = async (ds: SavedDataset) => {
+        console.log('handleDeleteDataset triggered for:', ds.id);
+        const reportsUsingDs = savedReports.filter(r => r.dataset_id === ds.id);
+        if (reportsUsingDs.length > 0) {
+            const names = reportsUsingDs.map(r => `"${r.name}"`).join(', ');
+            alert(`No se puede eliminar este dataset porque está siendo usado por los reportes: ${names}. Elimina los reportes primero.`);
+            return;
+        }
+
+        if (window.confirm('¿Estás seguro de que deseas eliminar este dataset y todos sus datos?')) {
+            try {
+                setIsProfiling(true);
+                console.log('Confirmation received, deleting from Supabase:', ds.id);
+                if (user) await deleteDataset(ds.id, ds.file_url, user.id);
+
+                console.log('Deletion successful, updating local state and refetching...');
+                // 1. Update local state immediately for fast UI feedback
+                setSavedDatasets(prev => prev.filter(d => d.id !== ds.id));
+
+                // 2. Refetch to sync with DB
+                if (user) {
+                    const updatedDatasets = await getDatasets(user.id);
+                    setSavedDatasets(updatedDatasets);
+                }
+
+                // Explicitly clear the current dataset if it was the one deleted
+                if (dataset?.id === ds.id) {
+                    setDataset(null);
+                    setStep('main');
+                }
+
+                alert('Dataset eliminado correctamente.');
+            } catch (err: any) {
+                console.error('Error in handleDeleteDataset:', err);
+                alert(`Error al eliminar el dataset: ${err.message || 'Error desconocido'}`);
+            } finally {
+                setIsProfiling(false);
+            }
+        }
+    };
+
+    const handleDeleteReport = async (reportId: string) => {
+        if (confirm('¿Estás seguro de que deseas eliminar este reporte?')) {
+            try {
+                if (user) await deleteReport(reportId, user.id);
+                if (user) fetchSavedReports(user.id);
+            } catch (error) {
+                alert('Error al eliminar el reporte.');
+            }
+        }
+    };
+
+    const handleRenameReport = async (report: SavedReport) => {
+        const newName = prompt('Nuevo nombre para el reporte:', report.name);
+        if (newName && newName.trim() !== '' && newName !== report.name) {
+            try {
+                if (user) await updateReportName(report.id, newName.trim(), user.id);
+                if (user) fetchSavedReports(user.id);
+            } catch {
+                alert('Error al eliminar el reporte.');
+            }
+        }
+    };
+
+    if (user === undefined) {
+        return (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: 'var(--background)' }}>
+                <div className="animate-pulse" style={{ color: 'var(--primary)', textAlign: 'center' }}>
+                    <div className="logo-orb" style={{ width: '40px', height: '40px', margin: '0 auto 16px' }}></div>
+                    <p>Preparando tu espacio...</p>
+                </div>
+                <style jsx>{`
+                    .logo-orb {
+                        background: linear-gradient(135deg, var(--primary), var(--secondary));
+                        border-radius: 50%;
+                        box-shadow: 0 0 20px var(--primary-glow);
+                    }
+                `}</style>
+            </div>
+        );
+    }
+
+    if (!user) {
+        return <LoginView />;
+    }
+
+    const renderContent = () => {
+        if (step === 'canvas' && dataset) {
+            return (
+                <ReportCanvas
+                    ref={canvasRef}
+                    dataset={dataset as any}
+                    initialReportId={initialReportId}
+                    savedDatasets={savedDatasets}
+                    onChangesStatusChange={(val) => setHasUnsavedChanges(val)}
+                    onSwitchDataset={(ds) => {
+                        setHasUnsavedChanges(false);
+                        handleLoadSavedDataset(ds);
+                    }}
+                />
+            );
+        }
+
+        if (step === 'profiling' && dataset) {
+            return (
+                <div style={{ padding: '40px' }} className="animate-in fade-in duration-500">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+                        <div>
+                            <h2 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff' }}>{dataset.name}</h2>
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                                <button
+                                    onClick={() => setPreviewView('preview')}
+                                    className={`tab-btn ${previewView === 'preview' ? 'active' : ''}`}
+                                >
+                                    Previsualización
+                                </button>
+                                <button
+                                    onClick={() => setPreviewView('stats')}
+                                    className={`tab-btn ${previewView === 'stats' ? 'active' : ''}`}
+                                >
+                                    Estadísticas
+                                </button>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '16px' }}>
+                            <button
+                                className="btn-secondary"
+                                onClick={() => setStep('main')}
+                                style={{
+                                    padding: '12px 24px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-muted)'
+                                }}
+                            >
+                                Cerrar
+                            </button>
+                            <button
+                                className="btn-primary"
+                                onClick={() => setStep('canvas')}
+                                style={{
+                                    padding: '12px 28px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '10px',
+                                    fontSize: '1rem',
+                                    fontWeight: 600,
+                                    boxShadow: '0 4px 15px var(--primary-glow)'
+                                }}
+                            >
+                                Crear Reporte <ArrowRight size={20} />
+                            </button>
+                        </div>
+                    </div>
+
+                    {previewView === 'stats' ? (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px' }}>
+                            {(dataset.stats as any[]).map((col: any) => {
+                                const Icon = col.type === 'DATE' || col.type === 'TIMESTAMP' ? Calendar :
+                                           ['BIGINT', 'DOUBLE', 'INTEGER', 'DECIMAL'].includes(col.type) ? Hash : ALargeSmall;
+                                
+                                return (
+                                    <div key={col.column} className="glass-card stat-card" style={{ padding: '24px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                <div className="stat-icon-wrapper">
+                                                    <Icon size={16} />
+                                                </div>
+                                                <span style={{ fontWeight: 600, fontSize: '1rem', color: '#fff' }}>{col.column}</span>
+                                            </div>
+                                            <span className="badge">{col.type}</span>
+                                        </div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                                            <div className="stat-item">
+                                                <p className="stat-label">Únicos</p>
+                                                <p className="stat-value">{col.unique}</p>
+                                            </div>
+                                            <div className="stat-item">
+                                                <p className="stat-label">Nulos</p>
+                                                <p className="stat-value" style={{ color: col.nulls > 0 ? '#f87171' : 'inherit' }}>{col.nulls}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="glass-card" style={{ overflow: 'hidden' }}>
+                            <DataTable columns={dataset.columns} data={dataset.preview} />
+                        </div>
+                    )}
+
+                    <style jsx>{`
+                        .tab-btn {
+                            background: rgba(255, 255, 255, 0.08);
+                            padding: 8px 18px;
+                            border-radius: 999px;
+                            color: rgba(238, 245, 255, 0.72);
+                            border: 1px solid rgba(255, 255, 255, 0.14);
+                            cursor: pointer;
+                            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+                        }
+                        .tab-btn.active {
+                            background: linear-gradient(180deg, rgba(166, 196, 255, 0.28), rgba(137, 182, 255, 0.16));
+                            color: #fff;
+                            border-color: rgba(196, 217, 255, 0.26);
+                        }
+                        .badge {
+                            font-size: 0.7rem;
+                            color: #fff;
+                            background: rgba(255, 255, 255, 0.1);
+                            padding: 5px 10px;
+                            border-radius: 999px;
+                            border: 1px solid rgba(255, 255, 255, 0.14);
+                        }
+                        .stat-card {
+                            border: 1px solid rgba(255, 255, 255, 0.14);
+                            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                            background: linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.06) 100%);
+                            position: relative;
+                            overflow: hidden;
+                        }
+                        .stat-card:hover {
+                            transform: translateY(-4px);
+                            border-color: rgba(255, 255, 255, 0.24);
+                            background: linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.07) 100%);
+                            box-shadow: 0 24px 44px rgba(7, 15, 29, 0.28);
+                        }
+                        .stat-icon-wrapper {
+                            background: rgba(255, 255, 255, 0.1);
+                            color: #fff;
+                            padding: 8px;
+                            border-radius: 14px;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            border: 1px solid rgba(255, 255, 255, 0.14);
+                        }
+                        .stat-item {
+                            padding: 12px;
+                            background: rgba(255, 255, 255, 0.06);
+                            border-radius: 18px;
+                            border: 1px solid rgba(255, 255, 255, 0.12);
+                        }
+                        .stat-label { 
+                            font-size: 0.7rem; 
+                            color: var(--text-muted); 
+                            text-transform: uppercase; 
+                            letter-spacing: 0.05em;
+                            margin-bottom: 4px;
+                        }
+                        .stat-value { 
+                            font-weight: 700; 
+                            font-size: 1.25rem; 
+                            color: #fff;
+                        }
+                    `}</style>
+                </div>
+            );
+        }
+
+        switch (activeView) {
+            case 'home':
+                return (
+                    <div style={{ padding: '40px' }}>
+                        <header style={{ marginBottom: '48px' }}>
+                            <h1 style={{ fontSize: '2.5rem', fontWeight: 700, marginBottom: '8px' }}>
+                                {t('dashboard.welcome')}, <span className="gradient-text">{user.user_metadata.full_name?.split(' ')[0] || 'Usuario'}</span>
+                            </h1>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '1.125rem' }}>{t('dashboard.welcome_sub')}</p>
+                        </header>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '32px', marginBottom: '48px' }}>
+                            <div className="glass-card action-card" onClick={() => setActiveView('upload')}>
+                                <div className="card-icon"><Plus size={32} /></div>
+                                <div>
+                                    <h3>{t('dashboard.new_dataset')}</h3>
+                                    <p>{t('dashboard.new_dataset_sub')}</p>
+                                </div>
+                            </div>
+                            <div className="glass-card action-card" onClick={() => setActiveView('datasets')}>
+                                <div className="card-icon"><Database size={32} /></div>
+                                <div>
+                                    <h3>{t('dashboard.explore_data')}</h3>
+                                    <p>{t('dashboard.explore_data_sub')}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {savedReports.length > 0 && (
+                            <section>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
+                                    <SphereIcon size={20} color="var(--accent)" />
+                                    <h2 style={{ fontSize: '1.25rem', fontWeight: 600 }}>{t('dashboard.recent_reports')}</h2>
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px' }}>
+                                    {savedReports.slice(0, 3).map(report => (
+                                        <div key={report.id} className="glass-card ds-card" onClick={() => handleLoadSavedReport(report)}>
+                                            <div className="ds-icon" style={{ color: 'var(--accent)' }}><SphereIcon size={20} /></div>
+                                            <div className="ds-info">
+                                                <h4>{report.name}</h4>
+                                                <p>{formatDate(report.created_at)}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+                        )}
+
+                        <style jsx>{`
+                            .action-card {
+                                padding: 32px;
+                                display: flex;
+                                align-items: center;
+                                gap: 24px;
+                                cursor: pointer;
+                                transition: all 0.28s ease;
+                            }
+                            .action-card:hover { transform: translateY(-4px); border-color: rgba(255, 255, 255, 0.24); }
+                            .card-icon { color: #fff; }
+                            .ds-card {
+                                padding: 16px;
+                                display: flex;
+                                align-items: center;
+                                gap: 16px;
+                                cursor: pointer;
+                            }
+                            .ds-icon { background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 16px; color: #fff; border: 1px solid rgba(255,255,255,0.12); }
+                            .ds-info h4 { font-size: 0.9375rem; margin: 0; }
+                            .ds-info p { font-size: 0.8125rem; color: var(--text-muted); margin: 0; }
+                        `}</style>
+                    </div>
+                );
+            case 'datasets':
+                return (
+                    <div style={{ padding: '40px' }}>
+                        <header style={{ marginBottom: '32px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                            <div>
+                                <h2 style={{ fontSize: '1.75rem', fontWeight: 600 }}>{t('dashboard.my_datasets')}</h2>
+                                <p style={{ color: 'var(--text-muted)' }}>{t('dashboard.my_datasets_sub')}</p>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                                <button
+                                    className="btn-primary"
+                                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px' }}
+                                    onClick={() => handleViewChange('upload')}
+                                >
+                                    <Plus size={18} />
+                                    {t('dashboard.new_dataset')}
+                                </button>
+                                <div style={{ fontSize: '0.875rem', color: savedDatasets.length >= 3 ? '#fbbf24' : 'var(--text-muted)', background: 'var(--surface)', padding: '4px 12px', borderRadius: '20px', border: '1px solid var(--border)' }}>
+                                    {savedDatasets.length}/3 {t('dashboard.my_datasets')}
+                                </div>
+                            </div>
+                        </header>
+
+                        {isLoadingSaved ? (
+                            <p>Cargando...</p>
+                        ) : savedDatasets.length > 0 ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '24px' }}>
+                                {savedDatasets.map(ds => (
+                                    <div
+                                        key={ds.id}
+                                        className="glass-card ds-item"
+                                        onClick={(e) => {
+                                            // Only trigger if not clicking on the menu or its children
+                                            if (!(e.target as HTMLElement).closest('.three-dot-menu')) {
+                                                handleLoadSavedDataset(ds);
+                                            }
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                            <FileText size={24} color="var(--primary)" />
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                    {formatDate(ds.created_at)}
+                                                </span>
+                                                <ThreeDotMenu items={[
+                                                    { label: t('common.open'), icon: <ExternalLink size={16} />, onClick: () => handleLoadSavedDataset(ds) },
+                                                    { label: t('common.delete'), icon: <Trash2 size={16} />, onClick: () => handleDeleteDataset(ds), variant: 'danger' }
+                                                ]} />
+                                            </div>
+                                        </div>
+                                        <h3 style={{ fontSize: '1rem', marginBottom: '8px' }}>{ds.name}</h3>
+                                        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                            {ds.columns?.length || 0} Columnas • {ds.stats?.length || 0} Métricas detectadas
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="glass-card" style={{ padding: '60px', textAlign: 'center' }}>
+                                <Database size={48} color="var(--text-muted)" style={{ marginBottom: '16px' }} />
+                                <h3>{t('dashboard.no_datasets')}</h3>
+                                <button className="btn-primary" style={{ marginTop: '20px' }} onClick={() => setActiveView('upload')}>{t('dashboard.start_now')}</button>
+                            </div>
+                        )}
+                        <style jsx>{`
+                            .ds-item { padding: 24px; cursor: pointer; transition: all 0.2s; }
+                            .ds-item:hover { border-color: rgba(255, 255, 255, 0.24); transform: translateY(-2px); }
+                        `}</style>
+                    </div>
+                );
+            case 'upload':
+                return (
+                    <div style={{ padding: '40px', maxWidth: '800px', margin: '0 auto' }}>
+                        <header style={{ marginBottom: '32px', textAlign: 'center' }}>
+                            <h2 style={{ fontSize: '1.75rem', fontWeight: 600 }}>Subir Dataset</h2>
+                            <p style={{ color: 'var(--text-muted)' }}>Aceptamos CSV, Excel (xlsx) y JSON.</p>
+                        </header>
+                        
+                        {pendingExcelFile && availableSheets.length > 1 ? (
+                            <div className="glass-card animate-in fade-in slide-in-from-bottom-4 duration-500" style={{ padding: '32px' }}>
+                                <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                                    <div className="ds-icon" style={{ margin: '0 auto 16px', width: 'fit-content' }}>
+                                        <FileText size={32} color="var(--primary)" />
+                                    </div>
+                                    <h3 style={{ fontSize: '1.25rem', marginBottom: '8px' }}>Selecciona una hoja</h3>
+                                    <p style={{ color: 'var(--text-muted)', fontSize: '0.9375rem' }}>
+                                        El archivo "{pendingExcelFile.name}" contiene varias hojas. ¿Cuál deseas importar?
+                                    </p>
+                                </div>
+                                
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+                                    {availableSheets.map(sheet => (
+                                        <button
+                                            key={sheet}
+                                            onClick={() => setSelectedSheet(sheet)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                borderRadius: '12px',
+                                                border: '1px solid',
+                                                borderColor: selectedSheet === sheet ? 'var(--primary)' : 'var(--border)',
+                                                background: selectedSheet === sheet ? 'rgba(139, 92, 246, 0.1)' : 'var(--surface)',
+                                                color: selectedSheet === sheet ? 'var(--primary)' : 'var(--text)',
+                                                textAlign: 'left',
+                                                cursor: 'pointer',
+                                                transition: 'all 0.2s',
+                                                fontWeight: selectedSheet === sheet ? 600 : 400,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px'
+                                            }}
+                                        >
+                                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: selectedSheet === sheet ? 'var(--primary)' : 'transparent', border: selectedSheet === sheet ? 'none' : '1px solid var(--text-muted)' }}></div>
+                                            {sheet}
+                                        </button>
+                                    ))}
+                                </div>
+                                
+                                <div style={{ display: 'flex', gap: '12px' }}>
+                                    <button 
+                                        className="btn-secondary" 
+                                        style={{ flex: 1, padding: '12px' }}
+                                        onClick={() => {
+                                            setPendingExcelFile(null);
+                                            setAvailableSheets([]);
+                                        }}
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button 
+                                        className="btn-primary" 
+                                        style={{ flex: 2, padding: '12px' }}
+                                        onClick={() => processFile(pendingExcelFile, selectedSheet)}
+                                    >
+                                        Importar hoja seleccionada
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <FileDropzone onFileSelect={handleFileSelect} />
+                        )}
+
+                        {isProfiling && (
+                            <div style={{ marginTop: '24px', textAlign: 'center' }}>
+                                <p className="animate-pulse">Procesando archivo...</p>
+                            </div>
+                        )}
+                    </div>
+                );
+            case 'reports':
+                return (
+                    <div style={{ padding: '40px' }}>
+                        <header style={{ marginBottom: '32px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                            <div>
+                                <h2 style={{ fontSize: '1.75rem', fontWeight: 600 }}>{t('dashboard.my_reports')}</h2>
+                                <p style={{ color: 'var(--text-muted)' }}>{t('dashboard.my_reports_sub')}</p>
+                            </div>
+                            <div style={{ fontSize: '0.875rem', color: savedReports.length >= 10 ? '#fbbf24' : 'var(--text-muted)', background: 'var(--surface)', padding: '4px 12px', borderRadius: '20px', border: '1px solid var(--border)' }}>
+                                {savedReports.length} {t('dashboard.my_reports')}
+                            </div>
+                        </header>
+
+                        {savedReports.length > 0 ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+                                {savedReports.map(report => (
+                                    <div
+                                        key={report.id}
+                                        className="glass-card report-item"
+                                        onClick={(e) => {
+                                            // Only trigger if not clicking on the menu or its children
+                                            if (!(e.target as HTMLElement).closest('.three-dot-menu')) {
+                                                handleLoadSavedReport(report);
+                                            }
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                            <SphereIcon size={24} color="var(--accent)" />
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                    {formatDate(report.created_at)}
+                                                </span>
+                                                <ThreeDotMenu items={[
+                                                    { label: t('common.open'), icon: <ExternalLink size={16} />, onClick: () => handleLoadSavedReport(report) },
+                                                    { label: t('common.rename'), icon: <Edit2 size={16} />, onClick: () => handleRenameReport(report) },
+                                                    { label: t('common.delete'), icon: <Trash2 size={16} />, onClick: () => handleDeleteReport(report.id), variant: 'danger' }
+                                                ]} />
+                                            </div>
+                                        </div>
+                                        <h3 style={{ fontSize: '1.125rem', marginBottom: '8px' }}>{report.name}</h3>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '16px' }}>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                {savedDatasets.find((d: SavedDataset) => d.id === report.dataset_id)?.name || 'Dataset asociado'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="glass-card" style={{ padding: '60px', textAlign: 'center' }}>
+                                <SphereIcon size={48} color="var(--text-muted)" style={{ marginBottom: '16px' }} />
+                                <h3>{t('dashboard.no_reports')}</h3>
+                                <p style={{ color: 'var(--text-muted)', marginTop: '8px' }}>{t('dashboard.no_reports_sub')}</p>
+                                <button className="btn-primary" style={{ marginTop: '24px' }} onClick={() => handleViewChange('upload')}>{t('dashboard.start_now')}</button>
+                            </div>
+                        )}
+                        <style jsx>{`
+                            .report-item { padding: 24px; cursor: pointer; transition: all 0.2s; position: relative; overflow: hidden; }
+                            .report-item:hover { border-color: rgba(255, 255, 255, 0.24); transform: translateY(-4px); }
+                            .report-item::after {
+                                content: ''; position: absolute; bottom: 0; left: 0; width: 100%; height: 2px;
+                                background: linear-gradient(to right, transparent, rgba(255,255,255,0.75), transparent);
+                                opacity: 0; transition: opacity 0.2s;
+                            }
+                            .report-item:hover::after { opacity: 1; }
+                            .badge-small {
+                                font-size: 0.65rem; background: var(--surface-light); padding: 4px 8px; border-radius: 4px; color: var(--accent);
+                            }
+                        `}</style>
+                    </div>
+                );
+            case 'settings':
+                return <SettingsView />;
+            default:
+                return null;
+        }
+    };
+
+    return (
+        <DashboardLayout
+            activeView={activeView}
+            onViewChange={handleViewChange}
+            onLogout={handleLogout}
+            userName={user.user_metadata.full_name || user.email}
+        >
+            {renderContent()}
+
+            {/* Unsaved Changes Confirmation Modal */}
+            {showConfirmModal && (
+                <div style={{
+                    position: 'fixed',
+                    inset: 0,
+                    zIndex: 100,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgba(0,0,0,0.8)',
+                    backdropFilter: 'blur(8px)'
+                }}>
+                    <div className="glass-card" style={{ padding: '32px', maxWidth: '450px', width: '90%', border: '1px solid var(--border)' }}>
+                        <h3 style={{ fontSize: '1.25rem', marginBottom: '12px' }}>Cambios sin guardar</h3>
+                        <p style={{ color: 'var(--text-muted)', marginBottom: '24px', fontSize: '0.9375rem', lineHeight: '1.5' }}>
+                            Tienes cambios pendientes en tu reporte. ¿Qué deseas hacer antes de salir?
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            <button
+                                className="btn-primary"
+                                onClick={() => confirmNavigation('save')}
+                                style={{ padding: '12px' }}
+                            >
+                                Guardar y salir
+                            </button>
+                            {canvasRef.current?.reportName && (
+                                <button
+                                    className="btn-secondary"
+                                    onClick={() => confirmNavigation('saveAs')}
+                                    style={{ padding: '12px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: '#ffffffff' }}
+                                >
+                                    Guardar como...
+                                </button>
+                            )}
+                            <button
+                                onClick={() => confirmNavigation('discard')}
+                                style={{ padding: '12px', background: 'transparent', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '0.875rem' }}
+                            >
+                                Descartar cambios
+                            </button>
+                            <button
+                                onClick={() => confirmNavigation('cancel')}
+                                style={{ padding: '12px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.875rem' }}
+                            >
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </DashboardLayout>
+    );
+}
+
+export default function Dashboard() {
+    return <DashboardContent />;
+}
