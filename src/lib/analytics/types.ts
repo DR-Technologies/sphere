@@ -17,6 +17,18 @@ export interface DatasetRow {
   [key: string]: string | number | boolean | null | undefined;
 }
 
+export type JsonOrient = 'records' | 'split' | 'index' | 'columns' | 'values' | 'table';
+
+export type DateInputFormat = 'AUTO' | 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD' | 'DD-MM-YYYY' | 'MM-DD-YYYY' | 'YYYY/MM/DD';
+
+export interface DatasetImportOptions {
+  sheetName?: string;
+  csvDelimiter?: string;
+  csvQuoteChar?: string;
+  jsonOrient?: JsonOrient;
+  dateFormat?: DateInputFormat;
+}
+
 export interface NormalizedDatasetManifest {
   version: 1;
   generated_at: string;
@@ -26,6 +38,7 @@ export interface NormalizedDatasetManifest {
   columns: DatasetColumn[];
   stats: DatasetColumnStat[];
   transforms: string[];
+  import_options?: DatasetImportOptions;
 }
 
 export interface NormalizedDatasetArtifacts {
@@ -47,7 +60,7 @@ export interface ProfileFromUrlOptions {
 }
 
 export interface AnalyticsProvider {
-  profileFile(file: File, sheetName?: string): Promise<DatasetProfileResult>;
+  profileFile(file: File, options?: DatasetImportOptions): Promise<DatasetProfileResult>;
   profileFromUrl(url: string, name: string, sheetName?: string, options?: ProfileFromUrlOptions): Promise<DatasetProfileResult>;
   runQuery(query: string, options?: { datasetId?: string }): Promise<Record<string, any>[]>;
   getExcelSheetNames(file: File): Promise<string[]>;

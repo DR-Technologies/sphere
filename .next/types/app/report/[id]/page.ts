@@ -1,4 +1,4 @@
-// File: /Users/dayana/Source/DRServices/Sphere/src/app/report/[id]/page.tsx
+// File: /Users/dayana/Source/sphere/src/app/report/[id]/page.tsx
 import * as entry from '../../../../../src/app/report/[id]/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

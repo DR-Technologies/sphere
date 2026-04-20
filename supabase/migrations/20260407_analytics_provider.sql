@@ -66,7 +66,7 @@ begin
 end
 $$;
 
-create or replace function public.map_duckdb_type_to_pg(input_type text)
+create or replace function public.map_dataset_type_to_pg(input_type text)
 returns text
 language sql
 immutable
@@ -83,9 +83,9 @@ as $$
   end
 $$;
 
-revoke all on function public.map_duckdb_type_to_pg(text) from public;
-revoke all on function public.map_duckdb_type_to_pg(text) from anon;
-grant execute on function public.map_duckdb_type_to_pg(text) to authenticated, service_role;
+revoke all on function public.map_dataset_type_to_pg(text) from public;
+revoke all on function public.map_dataset_type_to_pg(text) from anon;
+grant execute on function public.map_dataset_type_to_pg(text) to authenticated, service_role;
 
 create or replace function public.sync_normalized_dataset(
   p_dataset_id uuid,
@@ -102,7 +102,6 @@ declare
   create_columns_sql text;
   insert_columns_sql text;
   select_columns_sql text;
-  col jsonb;
 begin
   if not exists (
     select 1
@@ -116,33 +115,33 @@ begin
   table_name := 'dataset_' || replace(p_dataset_id::text, '-', '_');
 
   select string_agg(
-    format('%I %s', col->>'name', public.map_duckdb_type_to_pg(col->>'type')),
+    format('%I %s', column_def->>'name', public.map_dataset_type_to_pg(column_def->>'type')),
     ', '
   )
   into create_columns_sql
-  from jsonb_array_elements(p_columns) col;
+  from jsonb_array_elements(p_columns) as column_def;
 
   execute format('create table if not exists public.%I (%s)', table_name, create_columns_sql);
   execute format('revoke all on table public.%I from public, anon, authenticated', table_name);
   execute format('truncate table public.%I', table_name);
 
-  select string_agg(format('%I', col->>'name'), ', ')
+  select string_agg(format('%I', column_def->>'name'), ', ')
   into insert_columns_sql
-  from jsonb_array_elements(p_columns) col;
+  from jsonb_array_elements(p_columns) as column_def;
 
   select string_agg(
-    case public.map_duckdb_type_to_pg(col->>'type')
-      when 'bigint' then format('nullif(elem->>%L, '''')::bigint', col->>'name')
-      when 'double precision' then format('nullif(elem->>%L, '''')::double precision', col->>'name')
-      when 'boolean' then format('nullif(elem->>%L, '''')::boolean', col->>'name')
-      when 'date' then format('nullif(elem->>%L, '''')::date', col->>'name')
-      when 'timestamptz' then format('nullif(elem->>%L, '''')::timestamptz', col->>'name')
-      else format('nullif(elem->>%L, '''')', col->>'name')
+    case public.map_dataset_type_to_pg(column_def->>'type')
+      when 'bigint' then format('nullif(elem->>%L, '''')::bigint', column_def->>'name')
+      when 'double precision' then format('nullif(elem->>%L, '''')::double precision', column_def->>'name')
+      when 'boolean' then format('nullif(elem->>%L, '''')::boolean', column_def->>'name')
+      when 'date' then format('nullif(elem->>%L, '''')::date', column_def->>'name')
+      when 'timestamptz' then format('nullif(elem->>%L, '''')::timestamptz', column_def->>'name')
+      else format('nullif(elem->>%L, '''')', column_def->>'name')
     end,
     ', '
   )
   into select_columns_sql
-  from jsonb_array_elements(p_columns) col;
+  from jsonb_array_elements(p_columns) as column_def;
 
   execute format(
     'insert into public.%I (%s) select %s from jsonb_array_elements($1) elem',
@@ -196,3 +195,6 @@ $$;
 revoke all on function public.run_dataset_query(uuid, text) from public;
 revoke all on function public.run_dataset_query(uuid, text) from anon;
 grant execute on function public.run_dataset_query(uuid, text) to authenticated, service_role;
+
+drop function if exists public.map_duckdb_type_to_pg(text);
+

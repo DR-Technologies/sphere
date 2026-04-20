@@ -9,6 +9,7 @@ import {
     checkDatasetLimit, deleteReport
 } from '@/lib/persistence';
 import { profileFile, profileFromUrl, getExcelSheetNames } from '@/lib/profiler';
+import type { DatasetImportOptions, DateInputFormat, JsonOrient } from '@/lib/analytics/types';
 import { User } from '@supabase/supabase-js';
 import DashboardLayout from './layout/DashboardLayout';
 import FileDropzone from '@/components/upload/FileDropzone';
@@ -38,9 +39,14 @@ function DashboardContent() {
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [pendingNavigation, setPendingNavigation] = useState<{ view?: ViewState, step?: 'main' | 'profiling' | 'canvas' } | null>(null);
-    const [pendingExcelFile, setPendingExcelFile] = useState<File | null>(null);
+    const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
+    const [pendingImportFormat, setPendingImportFormat] = useState<string>('');
     const [availableSheets, setAvailableSheets] = useState<string[]>([]);
     const [selectedSheet, setSelectedSheet] = useState<string>('');
+    const [csvDelimiter, setCsvDelimiter] = useState(',');
+    const [csvQuoteChar, setCsvQuoteChar] = useState('\"');
+    const [jsonOrient, setJsonOrient] = useState<JsonOrient>('records');
+    const [dateFormat, setDateFormat] = useState<DateInputFormat>('AUTO');
     const canvasRef = React.useRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string } | null>(null);
 
     const handleViewChange = (view: ViewState) => {
@@ -147,6 +153,38 @@ function DashboardContent() {
         await supabase.auth.signOut();
     };
 
+    const detectCsvDelimiter = async (file: File) => {
+        const sample = (await file.slice(0, 4096).text()).split(/\r?\n/).slice(0, 5).join('\n');
+        const candidates = [',', ';', '\t', '|'];
+        return candidates
+            .map((delimiter) => ({ delimiter, score: sample.split('\n').reduce((sum, line) => sum + line.split(delimiter).length, 0) }))
+            .sort((a, b) => b.score - a.score)[0]?.delimiter || ',';
+    };
+
+    const getFileDisplayPath = (file: File) => {
+        const fileWithPath = file as File & { path?: string; webkitRelativePath?: string };
+        return fileWithPath.path || fileWithPath.webkitRelativePath || file.name;
+    };
+
+    const buildImportOptions = (): DatasetImportOptions => ({
+        sheetName: selectedSheet || undefined,
+        csvDelimiter: pendingImportFormat === 'csv' ? csvDelimiter : undefined,
+        csvQuoteChar: pendingImportFormat === 'csv' ? csvQuoteChar : undefined,
+        jsonOrient: pendingImportFormat === 'json' ? jsonOrient : undefined,
+        dateFormat
+    });
+
+    const resetImportOptions = () => {
+        setPendingImportFile(null);
+        setPendingImportFormat('');
+        setAvailableSheets([]);
+        setSelectedSheet('');
+        setCsvDelimiter(',');
+        setCsvQuoteChar('\"');
+        setJsonOrient('records');
+        setDateFormat('AUTO');
+    };
+
     const handleFileSelect = async (file: File) => {
         if (!user) return;
 
@@ -156,34 +194,58 @@ function DashboardContent() {
             return;
         }
 
-        const extension = file.name.split('.').pop()?.toLowerCase();
+        const extension = file.name.split('.').pop()?.toLowerCase() || '';
+        setPendingImportFile(file);
+        setPendingImportFormat(extension);
+        setDateFormat('AUTO');
+        setActiveView('upload');
+        setStep('main');
+
+        if (extension === 'csv') {
+            setCsvDelimiter(await detectCsvDelimiter(file));
+            setCsvQuoteChar('\"');
+            return;
+        }
+
+        if (extension === 'json') {
+            setJsonOrient('records');
+            return;
+        }
+
         if (extension === 'xlsx' || extension === 'xls') {
             try {
                 const sheets = await getExcelSheetNames(file);
-                if (sheets.length > 1) {
-                    setPendingExcelFile(file);
-                    setAvailableSheets(sheets);
-                    setSelectedSheet(sheets[0]);
-                    setStep('main'); // Just to be sure we are in a clean state
-                    // We'll use a new step or conditional rendering in 'upload' view
-                    setActiveView('upload'); 
-                    return;
-                }
+                setAvailableSheets(sheets);
+                setSelectedSheet(sheets[0] || '');
             } catch (err) {
                 console.error('Error reading Excel sheets:', err);
+                setAvailableSheets([]);
+                setSelectedSheet('');
             }
         }
-
-        await processFile(file);
     };
 
-    const processFile = async (file: File, sheetName?: string) => {
+
+    const ensureDatasetAnalyticsTable = async (saved: SavedDataset, profile: Awaited<ReturnType<typeof profileFile>>) => {
+        if (saved.normalized_table_name || !profile.artifacts?.normalizedRows?.length) {
+            return saved;
+        }
+
+        const normalizedTableName = await syncNormalizedDataset(saved.id, profile.columns, profile.artifacts.normalizedRows);
+        if (!normalizedTableName) {
+            throw new Error('No se pudo crear la tabla analítica normalizada del dataset.');
+        }
+
+        return { ...saved, normalized_table_name: normalizedTableName };
+    };
+
+    const processFile = async (file: File, importOptions: DatasetImportOptions = {}) => {
         if (!user) return;
         setIsProfiling(true);
         setStep('profiling');
         try {
-            const profile = await profileFile(file, sheetName);
-            const datasetName = sheetName ? `${file.name} (${sheetName})` : file.name;
+            const profile = await profileFile(file, importOptions);
+            const datasetName = importOptions.sheetName ? `${file.name} (${importOptions.sheetName})` : file.name;
             const datasetData = { name: datasetName, ...profile };
             setDataset(datasetData);
 
@@ -196,17 +258,12 @@ function DashboardContent() {
                         file_url: uploadedAssets.fileUrl,
                         normalized_file_url: uploadedAssets.normalizedFileUrl || undefined,
                         analytics_manifest_url: uploadedAssets.analyticsManifestUrl || undefined,
-                        sheet_name: sheetName,
+                        sheet_name: importOptions.sheetName,
                         columns: profile.columns,
                         stats: profile.stats
                     });
-                    if (profile.artifacts?.normalizedRows?.length) {
-                        const normalizedTableName = await syncNormalizedDataset(savedDs.id, profile.columns, profile.artifacts.normalizedRows);
-                        if (normalizedTableName) {
-                            savedDs.normalized_table_name = normalizedTableName;
-                        }
-                    }
-                    setDataset({ id: savedDs.id, name: datasetName, ...profile });
+                    const syncedDs = await ensureDatasetAnalyticsTable(savedDs, profile);
+                    setDataset({ id: syncedDs.id, name: datasetName, ...profile });
                     fetchSavedDatasets(user.id);
                 }
             }
@@ -216,8 +273,8 @@ function DashboardContent() {
             setStep('main');
         } finally {
             setIsProfiling(false);
-            setPendingExcelFile(null);
-            setAvailableSheets([]);
+            resetImportOptions();
+
         }
     };
 
@@ -229,7 +286,8 @@ function DashboardContent() {
                 normalizedFileUrl: saved.normalized_file_url,
                 analyticsManifestUrl: saved.analytics_manifest_url
             });
-            setDataset({ id: saved.id, name: saved.name, ...profile });
+            const syncedDataset = await ensureDatasetAnalyticsTable(saved, profile);
+            setDataset({ id: syncedDataset.id, name: syncedDataset.name, ...profile });
         } catch (err) {
             console.error('Error loading saved dataset:', err);
             alert('Failed to load saved dataset.');
@@ -255,7 +313,8 @@ function DashboardContent() {
                 normalizedFileUrl: ds.normalized_file_url,
                 analyticsManifestUrl: ds.analytics_manifest_url
             });
-            setDataset({ id: ds.id, name: ds.name, ...profile });
+            const syncedDataset = await ensureDatasetAnalyticsTable(ds, profile);
+            setDataset({ id: syncedDataset.id, name: syncedDataset.name, ...profile });
 
             // 2. Switch to canvas
             setInitialReportId(report.id);
@@ -683,62 +742,103 @@ function DashboardContent() {
                             <p style={{ color: 'var(--text-muted)' }}>Aceptamos CSV, Excel (xlsx) y JSON.</p>
                         </header>
                         
-                        {pendingExcelFile && availableSheets.length > 1 ? (
+                        {pendingImportFile ? (
                             <div className="glass-card animate-in fade-in slide-in-from-bottom-4 duration-500" style={{ padding: '32px' }}>
-                                <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                                <div style={{ textAlign: 'center', marginBottom: '28px' }}>
                                     <div className="ds-icon" style={{ margin: '0 auto 16px', width: 'fit-content' }}>
                                         <FileText size={32} color="var(--primary)" />
                                     </div>
-                                    <h3 style={{ fontSize: '1.25rem', marginBottom: '8px' }}>Selecciona una hoja</h3>
+                                    <h3 style={{ fontSize: '1.25rem', marginBottom: '8px' }}>Opciones de importación</h3>
                                     <p style={{ color: 'var(--text-muted)', fontSize: '0.9375rem' }}>
-                                        El archivo "{pendingExcelFile.name}" contiene varias hojas. ¿Cuál deseas importar?
+                                        Revisa cómo debemos leer este archivo antes de procesarlo.
                                     </p>
                                 </div>
-                                
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px', marginBottom: '24px' }}>
-                                    {availableSheets.map(sheet => (
-                                        <button
-                                            key={sheet}
-                                            onClick={() => setSelectedSheet(sheet)}
-                                            style={{
-                                                padding: '12px 16px',
-                                                borderRadius: '12px',
-                                                border: '1px solid',
-                                                borderColor: selectedSheet === sheet ? 'var(--primary)' : 'var(--border)',
-                                                background: selectedSheet === sheet ? 'rgba(139, 92, 246, 0.1)' : 'var(--surface)',
-                                                color: selectedSheet === sheet ? 'var(--primary)' : 'var(--text)',
-                                                textAlign: 'left',
-                                                cursor: 'pointer',
-                                                transition: 'all 0.2s',
-                                                fontWeight: selectedSheet === sheet ? 600 : 400,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '8px'
-                                            }}
-                                        >
-                                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: selectedSheet === sheet ? 'var(--primary)' : 'transparent', border: selectedSheet === sheet ? 'none' : '1px solid var(--text-muted)' }}></div>
-                                            {sheet}
-                                        </button>
-                                    ))}
+
+                                <div style={{ display: 'grid', gap: '18px' }}>
+                                    <label style={{ display: 'grid', gap: '8px' }}>
+                                        <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 600 }}>Ruta del archivo</span>
+                                        <input
+                                            value={getFileDisplayPath(pendingImportFile)}
+                                            readOnly
+                                            className="glass-input"
+                                            style={{ width: '100%', opacity: 0.85 }}
+                                        />
+                                    </label>
+
+                                    {pendingImportFormat === 'csv' && (
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                                            <label style={{ display: 'grid', gap: '8px' }}>
+                                                <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 600 }}>Separador</span>
+                                                <select className="glass-input" value={csvDelimiter} onChange={(e) => setCsvDelimiter(e.target.value)}>
+                                                    <option value=",">Coma (,)</option>
+                                                    <option value=";">Punto y coma (;)</option>
+                                                    <option value={'\t'}>Tabulación</option>
+                                                    <option value="|">Pipe (|)</option>
+                                                </select>
+                                            </label>
+                                            <label style={{ display: 'grid', gap: '8px' }}>
+                                                <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 600 }}>Quote char</span>
+                                                <select className="glass-input" value={csvQuoteChar} onChange={(e) => setCsvQuoteChar(e.target.value)}>
+                                                    <option value={'"'}>Doble comilla (&quot;)</option>
+                                                    <option value={"'"}>Comilla simple (&apos;)</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                    )}
+
+                                    {pendingImportFormat === 'json' && (
+                                        <label style={{ display: 'grid', gap: '8px' }}>
+                                            <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 600 }}>Orientación JSON</span>
+                                            <select className="glass-input" value={jsonOrient} onChange={(e) => setJsonOrient(e.target.value as JsonOrient)}>
+                                                <option value="records">records</option>
+                                                <option value="split">split</option>
+                                                <option value="index">index</option>
+                                                <option value="columns">columns</option>
+                                                <option value="values">values</option>
+                                                <option value="table">table</option>
+                                            </select>
+                                        </label>
+                                    )}
+
+                                    {(pendingImportFormat === 'xlsx' || pendingImportFormat === 'xls') && availableSheets.length > 0 && (
+                                        <label style={{ display: 'grid', gap: '8px' }}>
+                                            <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 600 }}>Hoja de Excel</span>
+                                            <select className="glass-input" value={selectedSheet} onChange={(e) => setSelectedSheet(e.target.value)}>
+                                                {availableSheets.map(sheet => (
+                                                    <option key={sheet} value={sheet}>{sheet}</option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                    )}
+
+                                    <label style={{ display: 'grid', gap: '8px' }}>
+                                        <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 600 }}>Formato estándar de fechas</span>
+                                        <select className="glass-input" value={dateFormat} onChange={(e) => setDateFormat(e.target.value as DateInputFormat)}>
+                                            <option value="AUTO">Auto detectar</option>
+                                            <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                                            <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                                            <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                                            <option value="DD-MM-YYYY">DD-MM-YYYY</option>
+                                            <option value="MM-DD-YYYY">MM-DD-YYYY</option>
+                                            <option value="YYYY/MM/DD">YYYY/MM/DD</option>
+                                        </select>
+                                    </label>
                                 </div>
-                                
-                                <div style={{ display: 'flex', gap: '12px' }}>
-                                    <button 
-                                        className="btn-secondary" 
+
+                                <div style={{ display: 'flex', gap: '12px', marginTop: '28px' }}>
+                                    <button
+                                        className="btn-secondary"
                                         style={{ flex: 1, padding: '12px' }}
-                                        onClick={() => {
-                                            setPendingExcelFile(null);
-                                            setAvailableSheets([]);
-                                        }}
+                                        onClick={resetImportOptions}
                                     >
                                         Cancelar
                                     </button>
-                                    <button 
-                                        className="btn-primary" 
+                                    <button
+                                        className="btn-primary"
                                         style={{ flex: 2, padding: '12px' }}
-                                        onClick={() => processFile(pendingExcelFile, selectedSheet)}
+                                        onClick={() => processFile(pendingImportFile, buildImportOptions())}
                                     >
-                                        Importar hoja seleccionada
+                                        Procesar archivo
                                     </button>
                                 </div>
                             </div>

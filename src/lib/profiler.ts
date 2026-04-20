@@ -1,8 +1,8 @@
 import { getAnalyticsProvider } from './analytics/provider';
-import type { ProfileFromUrlOptions } from './analytics/types';
+import type { DatasetImportOptions, ProfileFromUrlOptions } from './analytics/types';
 
-export async function profileFile(file: File, sheetName?: string) {
-    return getAnalyticsProvider().profileFile(file, sheetName);
+export async function profileFile(file: File, options?: DatasetImportOptions) {
+    return getAnalyticsProvider().profileFile(file, options);
 }
 
 export async function runQuery(query: string, options?: { datasetId?: string }) {

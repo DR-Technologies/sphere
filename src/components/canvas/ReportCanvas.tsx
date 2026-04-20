@@ -69,6 +69,7 @@ const WidgetCard = React.memo(({
     isActive,
     globalFilters,
     columnsMeta,
+    datasetId,
     onSelect,
     onRemove
 }: {
@@ -76,6 +77,7 @@ const WidgetCard = React.memo(({
     isActive: boolean;
     globalFilters: GlobalFilter[];
     columnsMeta: { name: string; type: string }[];
+    datasetId?: string;
     onSelect: () => void;
     onRemove: (e: React.MouseEvent) => void;
 }) => {
@@ -167,7 +169,12 @@ const WidgetCard = React.memo(({
                         ${limitClause}
                     `;
                 }
-                const result = await runQuery(query, { datasetId: dataset.id });
+                if (!datasetId) {
+                    setData([]);
+                    return;
+                }
+
+                const result = await runQuery(query, { datasetId });
 
                 // Check if result is all nulls (often happens if TRY_CAST fails for all rows)
                 const allNulls = result.length > 0 && result.every(row => row[widget.yAxis] === null);
@@ -191,7 +198,7 @@ const WidgetCard = React.memo(({
         };
 
         fetchData();
-    }, [widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.colorScheme, widget.customColor, widget.colorByCategory, widget.orientation, widget.columnAggregations]);
+    }, [widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.colorScheme, widget.customColor, widget.colorByCategory, widget.orientation, widget.columnAggregations, widget.latitudeField, widget.longitudeField, datasetId]);
 
     return (
         <div
@@ -969,13 +976,6 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                                     ...availableCols
                                                                 ];
 
-                                                                const abbrevs: Record<string, string> = {
-                                                                    'SUM': 'SUM',
-                                                                    'AVG': 'AVG',
-                                                                    'COUNT': 'CNT',
-                                                                    'DISTINCT': 'DST'
-                                                                };
-
                                                                 return allOrdered.map((col, idx) => {
                                                                     if (!col) return null;
                                                                     const isSelected = selectedCols.includes(col.name);
@@ -1017,11 +1017,6 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                                                 }}>
                                                                                     {col.name}
                                                                                 </span>
-                                                                                {isSelected && agg !== 'NONE' && (
-                                                                                    <span style={{ fontSize: '0.75rem', color: 'var(--primary)', opacity: 0.8, marginLeft: '4px' }}>
-                                                                                        ({abbrevs[agg] || agg})
-                                                                                    </span>
-                                                                                )}
                                                                             </div>
 
                                                                             {isSelected && (
@@ -1038,6 +1033,8 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                                                             border: '1px solid var(--border)',
                                                                                             borderRadius: '4px',
                                                                                             fontSize: '0.65rem',
+                                                                                            width: '52px',
+                                                                                            minWidth: '52px',
                                                                                             padding: '1px 2px',
                                                                                             color: 'var(--text-muted)',
                                                                                             cursor: 'pointer',
@@ -1047,8 +1044,8 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                                                         <option value="NONE">NONE</option>
                                                                                         <option value="SUM">SUM</option>
                                                                                         <option value="AVG">AVG</option>
-                                                                                        <option value="COUNT">COUNT</option>
-                                                                                        <option value="DISTINCT">DISTINCT</option>
+                                                                                        <option value="COUNT">CNT</option>
+                                                                                        <option value="DISTINCT">DST</option>
                                                                                     </select>
 
                                                                                     <button
@@ -1501,6 +1498,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                 isActive={selection.type === 'widget' && selection.id === widget.id}
                                                 globalFilters={globalFilters}
                                                 columnsMeta={dataset.columns}
+                                                datasetId={dataset.id}
                                                 onSelect={() => setSelection({ type: 'widget', id: widget.id })}
                                                 onRemove={(e) => removeWidget(widget.id, e)}
                                             />

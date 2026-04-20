@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import type {
   AnalyticsProvider,
+  DatasetImportOptions,
   DatasetColumn,
   DatasetColumnStat,
   DatasetProfileResult,
@@ -93,12 +94,12 @@ function sanitizeForJSON(row: Record<string, any>): DatasetRow {
   return plainRow;
 }
 
-function buildManifest(sourceFormat: string, sheetName: string | undefined, columns: DatasetColumn[], stats: DatasetColumnStat[]): NormalizedDatasetManifest {
+function buildManifest(sourceFormat: string, options: DatasetImportOptions | undefined, columns: DatasetColumn[], stats: DatasetColumnStat[]): NormalizedDatasetManifest {
   return {
     version: 1,
     generated_at: new Date().toISOString(),
     source_format: sourceFormat,
-    sheet_name: sheetName,
+    sheet_name: options?.sheetName,
     normalized_format: 'csv',
     columns,
     stats,
@@ -106,11 +107,12 @@ function buildManifest(sourceFormat: string, sheetName: string | undefined, colu
       'typed_ingestion_with_duckdb',
       'date_values_serialized_as_iso_strings',
       'numeric_and_boolean_values_preserved_when_detected'
-    ]
+    ],
+    import_options: options
   };
 }
 
-async function loadDatasetIntoDuckDb(file: File, sheetName?: string) {
+async function loadDatasetIntoDuckDb(file: File, options?: DatasetImportOptions) {
   const duckDB = await initDB();
   const conn = await duckDB.connect();
   const tableName = 'dataset';
@@ -125,7 +127,7 @@ async function loadDatasetIntoDuckDb(file: File, sheetName?: string) {
   await conn.query(`DROP TABLE IF EXISTS ${tableName}`);
 
   if (extension === 'xlsx' || extension === 'xls') {
-    const { csv } = await excelToCSV(file, sheetName);
+    const { csv } = await excelToCSV(file, options?.sheetName);
     await duckDB.registerFileText('temp.csv', csv);
     await conn.insertCSVFromPath('temp.csv', {
       name: tableName,
@@ -140,7 +142,9 @@ async function loadDatasetIntoDuckDb(file: File, sheetName?: string) {
       await conn.insertCSVFromPath(file.name, {
         name: tableName,
         header: true,
-        detect: true
+        detect: true,
+        delimiter: options?.csvDelimiter,
+        quote: options?.csvQuoteChar
       });
     } else {
       await conn.query(`CREATE TABLE ${tableName} AS SELECT * FROM read_json_auto('${file.name}')`);
@@ -152,7 +156,7 @@ async function loadDatasetIntoDuckDb(file: File, sheetName?: string) {
   return { conn, extension: extension || 'unknown' };
 }
 
-async function collectProfile(conn: duckdb.AsyncDuckDBConnection, extension: string, sheetName?: string): Promise<DatasetProfileResult> {
+async function collectProfile(conn: duckdb.AsyncDuckDBConnection, extension: string, options?: DatasetImportOptions): Promise<DatasetProfileResult> {
   const columnsResult = await conn.query(`DESCRIBE dataset`);
   const columns: DatasetColumn[] = columnsResult.toArray().map((row: Record<string, any>) => ({
     name: String(row.column_name),
@@ -199,7 +203,8 @@ async function collectProfile(conn: duckdb.AsyncDuckDBConnection, extension: str
     preview,
     artifacts: {
       normalizedCsv,
-      manifest: buildManifest(extension, sheetName, columns, stats)
+      normalizedRows,
+      manifest: buildManifest(extension, options, columns, stats)
     }
   };
 }
@@ -214,10 +219,10 @@ function deriveArtifactUrls(rawUrl: string) {
   };
 }
 
-async function profileFile(file: File, sheetName?: string): Promise<DatasetProfileResult> {
-  const { conn, extension } = await loadDatasetIntoDuckDb(file, sheetName);
+async function profileFile(file: File, options?: DatasetImportOptions): Promise<DatasetProfileResult> {
+  const { conn, extension } = await loadDatasetIntoDuckDb(file, options);
   try {
-    return await collectProfile(conn, extension, sheetName);
+    return await collectProfile(conn, extension, options);
   } finally {
     await conn.close();
   }
@@ -243,7 +248,7 @@ async function profileFromUrl(url: string, name: string, sheetName?: string, opt
       if (normalizedResponse.ok) {
         const normalizedBlob = await normalizedResponse.blob();
         const normalizedFile = new File([normalizedBlob], 'normalized.csv', { type: normalizedBlob.type || 'text/csv' });
-        return profileFile(normalizedFile, sheetName);
+        return profileFile(normalizedFile, { sheetName });
       }
     } catch {
       // Fall back to original file when normalized artifact is missing.
@@ -253,7 +258,7 @@ async function profileFromUrl(url: string, name: string, sheetName?: string, opt
   const response = await fetch(url);
   const blob = await response.blob();
   const file = new File([blob], fileNameForDetection, { type: blob.type });
-  return profileFile(file, sheetName);
+  return profileFile(file, { sheetName });
 }
 
 async function runQuery(query: string): Promise<Record<string, any>[]> {

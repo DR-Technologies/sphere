@@ -1,4 +1,4 @@
-// File: /Users/dayana/Source/DRServices/Sphere/src/app/auth/callback/page.tsx
+// File: /Users/dayana/Source/sphere/src/app/auth/callback/page.tsx
 import * as entry from '../../../../../src/app/auth/callback/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

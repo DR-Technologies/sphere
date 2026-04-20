@@ -2,7 +2,8 @@
 
 Aplica la estructura SQL de analytics ejecutando el archivo:
 
-- [20260407_analytics_provider.sql](/Users/dayana/Source/DRServices/Sphere/supabase/migrations/20260407_analytics_provider.sql)
+- [20260407_analytics_provider.sql](/Users/dayana/Source/sphere/supabase/migrations/20260407_analytics_provider.sql)
+- [20260412_fix_sync_normalized_dataset_alias.sql](/Users/dayana/Source/sphere/supabase/migrations/20260412_fix_sync_normalized_dataset_alias.sql) si ya habías ejecutado la migración anterior y necesitas reemplazar la función `sync_normalized_dataset`.
 
 Opciones:
 
