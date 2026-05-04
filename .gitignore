@@ -62,7 +62,15 @@ node_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
+# dotenv environment variables files
 .env
+.env.local
+.env.*.local
+
+# Next.js build output
+.next/
+
+# TypeScript incremental cache
+tsconfig.tsbuildinfo
 
 **/.DS_Store
