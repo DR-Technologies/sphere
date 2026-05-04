@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { appLogger } from './logger';
 
 export interface SavedDataset {
     id: string;
@@ -45,7 +46,7 @@ export async function uploadFile(file: File, userId: string): Promise<string | n
         .upload(filePath, file);
 
     if (uploadError) {
-        console.error('Error uploading file:', uploadError.message);
+        appLogger.error('ingestion', 'UPLOAD_RAW_FILE_FAILED', 'Failed to upload raw dataset file.', { error: uploadError });
         return null;
     }
 
@@ -80,7 +81,7 @@ export async function uploadDatasetAssets(
         .upload(rawPath, file);
 
     if (rawUploadError) {
-        console.error('Error uploading file:', rawUploadError.message);
+        appLogger.error('ingestion', 'UPLOAD_DATASET_ASSET_FAILED', 'Failed to upload dataset asset.', { error: rawUploadError });
         return { fileUrl: null };
     }
 
@@ -103,7 +104,7 @@ export async function uploadDatasetAssets(
             });
 
         if (normalizedUploadError) {
-            console.warn('Failed to upload normalized dataset artifact:', normalizedUploadError.message);
+            appLogger.warn('ingestion', 'UPLOAD_NORMALIZED_ARTIFACT_FAILED', 'Failed to upload normalized dataset artifact.', { error: normalizedUploadError });
         } else {
             normalizedFileUrl = supabase.storage.from('files').getPublicUrl(normalizedPath).data.publicUrl;
         }
@@ -116,7 +117,7 @@ export async function uploadDatasetAssets(
             });
 
         if (manifestUploadError) {
-            console.warn('Failed to upload analytics manifest artifact:', manifestUploadError.message);
+            appLogger.warn('ingestion', 'UPLOAD_ANALYTICS_MANIFEST_FAILED', 'Failed to upload analytics manifest artifact.', { error: manifestUploadError });
         } else {
             analyticsManifestUrl = supabase.storage.from('files').getPublicUrl(manifestPath).data.publicUrl;
         }
@@ -137,7 +138,7 @@ export async function syncNormalizedDataset(
     });
 
     if (error) {
-        console.warn('Failed to sync normalized dataset into Postgres analytics storage:', error.message);
+        appLogger.warn('analytics', 'SYNC_NORMALIZED_DATASET_FAILED', 'Failed to sync normalized dataset into analytics storage.', { error });
         return null;
     }
 
@@ -177,7 +178,10 @@ export async function saveDataset(dataset: Omit<SavedDataset, 'id' | 'created_at
         .single();
 
     if (error && error.code === 'PGRST204') {
-        console.warn('Some optional columns were not found in datasets table. Falling back to save without them.');
+        appLogger.warn('ingestion', 'DATASET_OPTIONAL_COLUMNS_MISSING', 'Some optional dataset columns were not found. Falling back to save without them.', {
+            once: true,
+            error
+        });
         const { data: retryData, error: retryError } = await supabase
             .from('datasets')
             .insert([metadataWithoutOptionalColumns])
@@ -189,7 +193,7 @@ export async function saveDataset(dataset: Omit<SavedDataset, 'id' | 'created_at
     }
 
     if (error) {
-        console.error('Error saving dataset metadata:', error.message);
+        appLogger.error('ingestion', 'SAVE_DATASET_METADATA_FAILED', 'Failed to save dataset metadata.', { error });
         throw error;
     }
 
@@ -207,7 +211,7 @@ export async function getDatasets(userId: string): Promise<SavedDataset[]> {
         .order('created_at', { ascending: false });
 
     if (error) {
-        console.error('Error fetching datasets:', error.message);
+        appLogger.error('ingestion', 'FETCH_DATASETS_FAILED', 'Failed to fetch datasets.', { error });
         return [];
     }
 
@@ -225,7 +229,7 @@ export async function saveReport(report: Omit<SavedReport, 'created_at'> | Omit<
         .single();
 
     if (error) {
-        console.error('Error saving report:', error.message);
+        appLogger.error('analytics', 'SAVE_REPORT_FAILED', 'Failed to save report.', { error });
         throw error;
     }
 
@@ -249,7 +253,7 @@ export async function getReports(userId: string, datasetId?: string): Promise<Sa
     const { data, error } = await query;
 
     if (error) {
-        console.error('Error fetching reports:', error.message);
+        appLogger.error('analytics', 'FETCH_REPORTS_FAILED', 'Failed to fetch reports.', { error });
         return [];
     }
 
@@ -267,7 +271,7 @@ export async function getReportById(reportId: string): Promise<SavedReport | nul
         .single();
 
     if (error) {
-        console.error('Error fetching report by ID:', error.message);
+        appLogger.error('analytics', 'FETCH_REPORT_BY_ID_FAILED', 'Failed to fetch report by id.', { error, meta: { reportId } });
         return null;
     }
 
@@ -285,7 +289,7 @@ export async function getDatasetById(datasetId: string): Promise<SavedDataset | 
         .single();
 
     if (error) {
-        console.error('Error fetching dataset by ID:', error.message);
+        appLogger.error('ingestion', 'FETCH_DATASET_BY_ID_FAILED', 'Failed to fetch dataset by id.', { error, meta: { datasetId } });
         return null;
     }
 
@@ -303,7 +307,7 @@ export async function deleteReport(reportId: string, userId: string) {
         .eq('user_id', userId);
 
     if (error) {
-        console.error('Error deleting report:', error.message);
+        appLogger.error('analytics', 'DELETE_REPORT_FAILED', 'Failed to delete report.', { error, meta: { reportId, userId } });
         throw error;
     }
 }
@@ -320,7 +324,7 @@ export async function deleteDataset(datasetId: string, fileUrl: string, userId: 
         .eq('user_id', userId);
 
     if (dbError) {
-        console.error('Error deleting dataset from DB:', dbError.message);
+        appLogger.error('ingestion', 'DELETE_DATASET_DB_FAILED', 'Failed to delete dataset from database.', { error: dbError, meta: { datasetId, userId } });
         throw dbError;
     }
 
@@ -336,7 +340,7 @@ export async function deleteDataset(datasetId: string, fileUrl: string, userId: 
             await supabase.storage.from('files').remove(derivedPaths);
         }
     } catch (err) {
-        console.warn('Failed to delete file from storage:', err);
+        appLogger.warn('ingestion', 'DELETE_DATASET_STORAGE_FAILED', 'Failed to delete dataset files from storage.', { error: err, meta: { datasetId } });
     }
 }
 
@@ -351,7 +355,7 @@ export async function updateReportName(reportId: string, name: string, userId: s
         .eq('user_id', userId);
 
     if (error) {
-        console.error('Error updating report name:', error.message);
+        appLogger.error('analytics', 'UPDATE_REPORT_NAME_FAILED', 'Failed to update report name.', { error, meta: { reportId, userId } });
         throw error;
     }
 }
@@ -365,7 +369,10 @@ export async function checkDatasetLimit(userId: string): Promise<boolean> {
         .select('*', { count: 'exact', head: true })
         .eq('user_id', userId);
 
-    if (error) return false;
+    if (error) {
+        appLogger.error('ingestion', 'COUNT_DATASETS_FAILED', 'Failed to count datasets.', { error, meta: { userId } });
+        return false;
+    }
     return (count || 0) < 3;
 }
 
@@ -378,6 +385,9 @@ export async function checkReportLimit(datasetId: string): Promise<boolean> {
         .select('*', { count: 'exact', head: true })
         .eq('dataset_id', datasetId);
 
-    if (error) return false;
+    if (error) {
+        appLogger.error('analytics', 'COUNT_REPORTS_FAILED', 'Failed to count reports.', { error, meta: { datasetId } });
+        return false;
+    }
     return (count || 0) < 3;
 }

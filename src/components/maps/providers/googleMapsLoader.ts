@@ -1,5 +1,7 @@
 'use client';
 
+import { appLogger } from '@/lib/logger';
+
 declare global {
   interface Window {
     google?: any;
@@ -24,6 +26,7 @@ export async function loadGoogleMaps(): Promise<any> {
 
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
   if (!apiKey) {
+    appLogger.warn('maps', 'GOOGLE_MAPS_API_KEY_MISSING', 'Google Maps API key is missing.', { once: true });
     throw new Error('Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY');
   }
 
@@ -42,7 +45,10 @@ export async function loadGoogleMaps(): Promise<any> {
     script.async = true;
     script.defer = true;
     script.onload = () => resolve(window.google.maps);
-    script.onerror = () => reject(new Error('Failed to load Google Maps'));
+    script.onerror = () => {
+      appLogger.error('maps', 'GOOGLE_MAPS_SCRIPT_LOAD_FAILED', 'Failed to load Google Maps script.', { once: true });
+      reject(new Error('Failed to load Google Maps'));
+    };
     document.head.appendChild(script);
   });
 

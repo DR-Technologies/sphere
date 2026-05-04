@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { appLogger, getErrorMessage } from '@/lib/logger';
 import { Loader2 } from 'lucide-react';
 
 export default function AuthCallback() {
@@ -33,9 +34,9 @@ export default function AuthCallback() {
                 // supabase-js usually handles this automatically on initialization
 
                 router.replace('/');
-            } catch (err: any) {
-                console.error('Auth Callback Error:', err.message);
-                setError(err.message);
+            } catch (err: unknown) {
+                appLogger.error('auth', 'AUTH_CALLBACK_FAILED', 'Failed to finalize auth callback.', { error: err });
+                setError(getErrorMessage(err, 'Error de autenticación'));
             }
         };
 

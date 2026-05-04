@@ -57,7 +57,7 @@ export default function DashboardLayout({
                     overflow-y: auto;
                     overflow-x: hidden;
                     position: relative;
-                    padding: 0 0 0 18px;
+                    padding: 0 0 0 12px;
                 }
             `}</style>
         </div>

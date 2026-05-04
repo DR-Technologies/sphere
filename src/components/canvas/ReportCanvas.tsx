@@ -9,6 +9,7 @@ import { useTranslation } from '@/lib/i18n/LanguageContext';
 import ChartRenderer, { ChartType } from '../visuals/ChartRenderer';
 import { runQuery } from '@/lib/profiler';
 import { saveReport, getReports, deleteReport, checkReportLimit, SavedDataset, SavedReport } from '@/lib/persistence';
+import { appLogger, getErrorMessage } from '@/lib/logger';
 import { ResponsiveGridLayout, ResizeHandleAxis } from 'react-grid-layout';
 const ResponsiveGridLayoutComponent = ResponsiveGridLayout as any;
 import { supabase } from '@/lib/supabase';
@@ -33,9 +34,18 @@ export interface Widget {
     colorScheme?: 'varied' | 'blues' | 'solid';
     colorByCategory?: boolean;
     customColor?: string;
+    showLegend?: boolean;
+    showTooltip?: boolean;
+    showDataLabels?: boolean;
+    numberFormat?: 'standard' | 'compact';
+    dateDisplayFormat?: 'default' | 'short';
     columnAggregations?: Record<string, AggregationType>;
     latitudeField?: string;
     longitudeField?: string;
+    showWidgetTitle?: boolean;
+    showWidgetSubtitle?: boolean;
+    showCardLabel?: boolean;
+    cardValueSize?: 'small' | 'medium' | 'large';
 }
 
 export interface GlobalFilter {
@@ -48,6 +58,8 @@ export type SelectionState =
     | { type: 'none' }
     | { type: 'widget'; id: string }
     | { type: 'filters' };
+
+type WidgetSettingsSection = 'data' | 'query' | 'presentation' | null;
 
 interface ReportCanvasProps {
     dataset: {
@@ -62,6 +74,292 @@ interface ReportCanvasProps {
     onReportDeleted?: () => void;
     onChangesStatusChange?: (hasChanges: boolean) => void;
     onSwitchDataset?: (dataset: SavedDataset) => void;
+}
+
+const NUMERIC_COLUMN_TYPES = new Set(['INTEGER', 'BIGINT', 'DOUBLE', 'DECIMAL', 'NUMERIC', 'REAL', 'SMALLINT']);
+const PRESENTATION_CONTROL_SUPPORT: Record<ChartType, { legend: boolean; tooltip: boolean; dataLabels: boolean; colors: boolean; numberFormat: boolean; dateFormat: boolean; orientation: boolean }> = {
+    bar: { legend: true, tooltip: true, dataLabels: true, colors: true, numberFormat: true, dateFormat: true, orientation: true },
+    line: { legend: true, tooltip: true, dataLabels: true, colors: true, numberFormat: true, dateFormat: true, orientation: false },
+    pie: { legend: true, tooltip: true, dataLabels: true, colors: true, numberFormat: true, dateFormat: true, orientation: false },
+    area: { legend: true, tooltip: true, dataLabels: true, colors: true, numberFormat: true, dateFormat: true, orientation: false },
+    table: { legend: false, tooltip: false, dataLabels: false, colors: false, numberFormat: true, dateFormat: true, orientation: false },
+    treemap: { legend: false, tooltip: true, dataLabels: true, colors: true, numberFormat: true, dateFormat: true, orientation: false },
+    card: { legend: false, tooltip: false, dataLabels: false, colors: false, numberFormat: true, dateFormat: false, orientation: false },
+    map: { legend: false, tooltip: false, dataLabels: false, colors: true, numberFormat: true, dateFormat: false, orientation: false }
+};
+
+const WIDGET_TYPE_CAPABILITIES: Record<ChartType, {
+    usesColumns: boolean;
+    usesMapFields: boolean;
+    usesOrientation: boolean;
+    usesTopN: boolean;
+    usesCardControls: boolean;
+}> = {
+    bar: { usesColumns: false, usesMapFields: false, usesOrientation: true, usesTopN: true, usesCardControls: false },
+    line: { usesColumns: false, usesMapFields: false, usesOrientation: false, usesTopN: true, usesCardControls: false },
+    pie: { usesColumns: false, usesMapFields: false, usesOrientation: false, usesTopN: true, usesCardControls: false },
+    area: { usesColumns: false, usesMapFields: false, usesOrientation: false, usesTopN: true, usesCardControls: false },
+    table: { usesColumns: true, usesMapFields: false, usesOrientation: false, usesTopN: false, usesCardControls: false },
+    treemap: { usesColumns: false, usesMapFields: false, usesOrientation: false, usesTopN: false, usesCardControls: false },
+    card: { usesColumns: false, usesMapFields: false, usesOrientation: false, usesTopN: false, usesCardControls: true },
+    map: { usesColumns: false, usesMapFields: true, usesOrientation: false, usesTopN: true, usesCardControls: false }
+};
+
+function getWidgetDisplayDefaults(type: ChartType) {
+    return {
+        showLegend: PRESENTATION_CONTROL_SUPPORT[type].legend,
+        showTooltip: PRESENTATION_CONTROL_SUPPORT[type].tooltip,
+        showDataLabels: false,
+        numberFormat: 'standard' as const,
+        dateDisplayFormat: 'default' as const
+    };
+}
+
+function getColumnType(columnsMeta: { name: string; type: string }[], columnName?: string) {
+    if (!columnName) return null;
+    return columnsMeta.find((column) => column.name === columnName)?.type?.toUpperCase() || null;
+}
+
+function isExistingColumn(columnsMeta: { name: string; type: string }[], columnName?: string) {
+    return Boolean(columnName && columnsMeta.some((column) => column.name === columnName));
+}
+
+function formatWidgetFieldLabel(value?: string) {
+    if (!value) return '';
+    return value
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function buildLegacyDefaultWidgetTitle(widget: Pick<Widget, 'type' | 'xAxis' | 'yAxis' | 'topN'>) {
+    if (widget.type === 'pie') {
+        return `Top ${widget.topN || 10} - ${widget.yAxis} by ${widget.xAxis}`;
+    }
+
+    if (widget.type === 'card') {
+        return `Nuevo indicador de ${widget.yAxis}`;
+    }
+
+    if (widget.type === 'map') {
+        return `Nuevo mapa de ${widget.yAxis}`;
+    }
+
+    return `Nuevo Gráfico de ${widget.type}`;
+}
+
+function buildDefaultWidgetTitle(widget: Pick<Widget, 'type' | 'xAxis' | 'yAxis'>) {
+    const xLabel = formatWidgetFieldLabel(widget.xAxis);
+    const yLabel = formatWidgetFieldLabel(widget.yAxis);
+
+    if (widget.type === 'table') {
+        return 'Detalle';
+    }
+
+    if (widget.type === 'card') {
+        return yLabel || 'Indicador';
+    }
+
+    if (widget.type === 'map') {
+        return yLabel ? `${yLabel} por ubicación` : 'Mapa';
+    }
+
+    if (widget.type === 'treemap' && xLabel && yLabel) {
+        return `${xLabel} por ${yLabel}`;
+    }
+
+    if (xLabel && yLabel) {
+        return `${yLabel} por ${xLabel}`;
+    }
+
+    return yLabel || xLabel || 'Visualización';
+}
+
+function shouldRefreshWidgetTitle(currentWidget: Widget) {
+    const currentTitle = currentWidget.title?.trim();
+
+    if (!currentTitle) {
+        return true;
+    }
+
+    const generatedTitles = new Set([
+        buildLegacyDefaultWidgetTitle(currentWidget),
+        buildDefaultWidgetTitle(currentWidget)
+    ]);
+
+    return generatedTitles.has(currentTitle);
+}
+
+function getSuggestedWidgetFields(dataset: ReportCanvasProps['dataset']) {
+    const numericCol = dataset.stats.find(s => ['BIGINT', 'DOUBLE', 'INTEGER', 'DECIMAL'].includes(s.type))?.column || dataset.columns[1]?.name || dataset.columns[0]?.name || '';
+    const categoricalCol = dataset.columns[0]?.name || numericCol;
+    const latitudeCol = dataset.columns.find(col => /^(lat|latitude)$/i.test(col.name))?.name || dataset.columns[0]?.name || '';
+    const longitudeCol = dataset.columns.find(col => /^(lng|lon|longitude)$/i.test(col.name))?.name || dataset.columns[1]?.name || dataset.columns[0]?.name || '';
+
+    return { numericCol, categoricalCol, latitudeCol, longitudeCol };
+}
+
+function getWidgetTypeDefaults(type: ChartType, dataset: ReportCanvasProps['dataset']): Partial<Widget> {
+    const { numericCol, categoricalCol, latitudeCol, longitudeCol } = getSuggestedWidgetFields(dataset);
+
+    return {
+        type,
+        xAxis: categoricalCol,
+        yAxis: numericCol,
+        aggregation: type === 'treemap' ? 'NONE' : 'SUM',
+        columns: type === 'table' ? [categoricalCol, numericCol].filter(Boolean) : undefined,
+        columnAggregations: type === 'table' ? {} : undefined,
+        latitudeField: type === 'map' ? latitudeCol : undefined,
+        longitudeField: type === 'map' ? longitudeCol : undefined,
+        topN: type === 'pie' ? 10 : type === 'map' ? 500 : undefined,
+        orientation: type === 'bar' ? 'vertical' : undefined,
+        colorScheme: 'varied',
+        colorByCategory: true,
+        showWidgetTitle: true,
+        showWidgetSubtitle: true,
+        showCardLabel: type === 'card' ? true : undefined,
+        cardValueSize: type === 'card' ? 'medium' : undefined,
+        ...getWidgetDisplayDefaults(type)
+    };
+}
+
+function sanitizeWidgetForType(widget: Widget, nextType: ChartType, dataset: ReportCanvasProps['dataset']): Widget {
+    const capabilities = WIDGET_TYPE_CAPABILITIES[nextType];
+    const defaults = getWidgetTypeDefaults(nextType, dataset);
+
+    const nextWidget: Widget = {
+        ...widget,
+        ...defaults,
+        id: widget.id,
+        x: widget.x,
+        y: widget.y,
+        w: widget.w,
+        h: widget.h,
+        type: nextType,
+        xAxis: isExistingColumn(dataset.columns, widget.xAxis) ? widget.xAxis : (defaults.xAxis || ''),
+        yAxis: isExistingColumn(dataset.columns, widget.yAxis) ? widget.yAxis : (defaults.yAxis || ''),
+        showWidgetTitle: widget.showWidgetTitle ?? true,
+        showWidgetSubtitle: widget.showWidgetSubtitle ?? true
+    };
+
+    if (capabilities.usesColumns) {
+        const validColumns = (widget.columns || []).filter((columnName) => isExistingColumn(dataset.columns, columnName));
+        nextWidget.columns = validColumns.length > 0 ? validColumns : defaults.columns;
+        nextWidget.columnAggregations = Object.fromEntries(
+            Object.entries(widget.columnAggregations || {}).filter(([columnName]) => nextWidget.columns?.includes(columnName))
+        );
+    } else {
+        nextWidget.columns = undefined;
+        nextWidget.columnAggregations = undefined;
+    }
+
+    if (capabilities.usesMapFields) {
+        nextWidget.latitudeField = isExistingColumn(dataset.columns, widget.latitudeField) ? widget.latitudeField : defaults.latitudeField;
+        nextWidget.longitudeField = isExistingColumn(dataset.columns, widget.longitudeField) ? widget.longitudeField : defaults.longitudeField;
+    } else {
+        nextWidget.latitudeField = undefined;
+        nextWidget.longitudeField = undefined;
+    }
+
+    nextWidget.orientation = capabilities.usesOrientation ? (widget.orientation || defaults.orientation) : undefined;
+    nextWidget.topN = capabilities.usesTopN ? (widget.topN ?? defaults.topN) : undefined;
+
+    if (capabilities.usesCardControls) {
+        nextWidget.showCardLabel = widget.showCardLabel ?? true;
+        nextWidget.cardValueSize = widget.cardValueSize || 'medium';
+    } else {
+        nextWidget.showCardLabel = undefined;
+        nextWidget.cardValueSize = undefined;
+    }
+
+    if (!PRESENTATION_CONTROL_SUPPORT[nextType].legend) nextWidget.showLegend = false;
+    if (!PRESENTATION_CONTROL_SUPPORT[nextType].tooltip) nextWidget.showTooltip = false;
+    if (!PRESENTATION_CONTROL_SUPPORT[nextType].dataLabels) nextWidget.showDataLabels = false;
+    if (!PRESENTATION_CONTROL_SUPPORT[nextType].dateFormat) nextWidget.dateDisplayFormat = getWidgetDisplayDefaults(nextType).dateDisplayFormat;
+    if (!PRESENTATION_CONTROL_SUPPORT[nextType].numberFormat) nextWidget.numberFormat = getWidgetDisplayDefaults(nextType).numberFormat;
+
+    if (nextType === 'treemap') {
+        nextWidget.aggregation = 'NONE';
+        nextWidget.orderBy = undefined;
+    }
+
+    if (shouldRefreshWidgetTitle(widget)) {
+        nextWidget.title = buildDefaultWidgetTitle(nextWidget);
+    }
+
+    return nextWidget;
+}
+
+function getWidgetConfigIssue(widget: Widget, columnsMeta: { name: string; type: string }[]) {
+    const columnExists = (columnName?: string) => isExistingColumn(columnsMeta, columnName);
+    const isNumericAggregation = widget.aggregation === 'SUM' || widget.aggregation === 'AVG';
+    const yAxisType = getColumnType(columnsMeta, widget.yAxis);
+
+    if (widget.type === 'table') {
+        const validColumns = (widget.columns || []).filter((columnName) => columnExists(columnName));
+        if (validColumns.length === 0) {
+            return 'Selecciona al menos una columna para mostrar la tabla.';
+        }
+        return null;
+    }
+
+    if (widget.type === 'card') {
+        if (!columnExists(widget.yAxis)) {
+            return 'Selecciona un campo de valor válido para la tarjeta.';
+        }
+        if (isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+            return `“${widget.yAxis}” debe ser una columna numérica para usar ${widget.aggregation}.`;
+        }
+        return null;
+    }
+
+    if (widget.type === 'map') {
+        if (!columnExists(widget.latitudeField) || !columnExists(widget.longitudeField)) {
+            return 'Selecciona campos válidos de latitud y longitud para mostrar el mapa.';
+        }
+        if (!columnExists(widget.yAxis)) {
+            return 'Selecciona un campo de valor válido para el mapa.';
+        }
+        if (widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+            return `“${widget.yAxis}” debe ser una columna numérica para usar ${widget.aggregation}.`;
+        }
+        return null;
+    }
+
+    if (!columnExists(widget.xAxis) || !columnExists(widget.yAxis)) {
+        return 'Selecciona campos válidos para configurar esta visualización.';
+    }
+
+    if (widget.type !== 'treemap' && widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+        return `“${widget.yAxis}” debe ser una columna numérica para usar ${widget.aggregation}.`;
+    }
+
+    return null;
+}
+
+function buildAggregationExpression(
+    columnsMeta: { name: string; type: string }[],
+    columnName: string,
+    aggregation: AggregationType
+) {
+    if (aggregation === 'COUNT') {
+        return `COUNT("${columnName}")`;
+    }
+
+    if (aggregation === 'DISTINCT') {
+        return `COUNT(DISTINCT "${columnName}")`;
+    }
+
+    if (aggregation === 'SUM' || aggregation === 'AVG') {
+        const columnType = getColumnType(columnsMeta, columnName);
+        if (!columnType || !NUMERIC_COLUMN_TYPES.has(columnType)) {
+            throw new Error(`Aggregation ${aggregation} requires a numeric column.`);
+        }
+
+        return `${aggregation}("${columnName}"::double precision)`;
+    }
+
+    return `${aggregation}("${columnName}")`;
 }
 
 const WidgetCard = React.memo(({
@@ -84,9 +382,17 @@ const WidgetCard = React.memo(({
     const [data, setData] = useState<Record<string, any>[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const configIssue = React.useMemo(() => getWidgetConfigIssue(widget, columnsMeta), [widget, columnsMeta]);
 
     useEffect(() => {
         const fetchData = async () => {
+            if (configIssue) {
+                setLoading(false);
+                setData([]);
+                setError(configIssue);
+                return;
+            }
+
             setLoading(true);
             setError(null);
             try {
@@ -97,16 +403,12 @@ const WidgetCard = React.memo(({
                     : '';
 
                 if (widget.type === 'card') {
-                    const aggExpr = widget.aggregation === 'COUNT'
-                        ? `COUNT("${widget.yAxis}")`
-                        : `${widget.aggregation}(TRY_CAST("${widget.yAxis}" AS DOUBLE))`;
+                    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
                     query = `SELECT ${aggExpr} as "${widget.yAxis}" FROM dataset ${whereClause}`;
                 } else if (widget.type === 'map' && widget.latitudeField && widget.longitudeField) {
                     const metricExpr = widget.aggregation === 'NONE'
-                        ? `TRY_CAST("${widget.yAxis}" AS DOUBLE)`
-                        : widget.aggregation === 'COUNT'
-                            ? `COUNT("${widget.yAxis}")`
-                            : `${widget.aggregation}(TRY_CAST("${widget.yAxis}" AS DOUBLE))`;
+                        ? `"${widget.yAxis}"::double precision`
+                        : buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
                     const dimensionSelect = widget.xAxis ? `"${widget.xAxis}",` : '';
                     const groupByClause = widget.aggregation === 'NONE'
                         ? ''
@@ -132,9 +434,7 @@ const WidgetCard = React.memo(({
                             const agg = colAggs[c] || 'NONE';
                             if (agg === 'NONE') return `"${c}"`;
                             const abbrev = abbrevs[agg] || agg;
-                            if (agg === 'DISTINCT') return `COUNT(DISTINCT "${c}") as "${c} (${abbrev})"`;
-                            if (['SUM', 'AVG'].includes(agg)) return `${agg}(TRY_CAST("${c}" AS DOUBLE)) as "${c} (${abbrev})"`;
-                            return `${agg}("${c}") as "${c} (${abbrev})"`;
+                            return `${buildAggregationExpression(columnsMeta, c, agg as AggregationType)} as "${c} (${abbrev})"`;
                         }).join(', ');
 
                         const dimensions = widget.columns.filter(c => (colAggs[c] || 'NONE') === 'NONE');
@@ -150,9 +450,7 @@ const WidgetCard = React.memo(({
                     const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 100';
                     query = `SELECT "${widget.xAxis}", "${widget.yAxis}" FROM dataset ${whereClause} ${orderClause} ${limitClause}`;
                 } else {
-                    const aggExpr = widget.aggregation === 'COUNT'
-                        ? `COUNT("${widget.yAxis}")`
-                        : `${widget.aggregation}(TRY_CAST("${widget.yAxis}" AS DOUBLE))`;
+                    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
 
                     const orderCol = widget.orderBy === 'ASC' || widget.orderBy === 'DESC' ? `"${widget.yAxis}"` : `"${widget.xAxis}"`;
                     const orderDir = widget.orderBy || 'DESC';
@@ -185,12 +483,23 @@ const WidgetCard = React.memo(({
                     setData(result);
                 }
             } catch (err: unknown) {
-                console.error('Error fetching widget data:', err);
-                const msg = err instanceof Error ? err.message : '';
+                appLogger.error('analytics', 'WIDGET_QUERY_FAILED', 'Failed to fetch widget data.', {
+                    error: err,
+                    meta: {
+                        widgetId: widget.id,
+                        widgetType: widget.type,
+                        aggregation: widget.aggregation,
+                        xAxis: widget.xAxis,
+                        yAxis: widget.yAxis
+                    }
+                });
+                const msg = getErrorMessage(err, '');
                 if (msg.includes('No function matches')) {
                     setError(`Aggregation ${widget.aggregation} not supported for this column type.`);
+                } else if (msg.includes('requires a numeric column')) {
+                    setError(`"${widget.yAxis}" debe ser una columna numérica para usar ${widget.aggregation}.`);
                 } else {
-                    setError('Failed to fetch data. Check if column is compatible.');
+                    setError('No se pudo cargar el widget. Revisa que los campos y la agregación sean compatibles.');
                 }
             } finally {
                 setLoading(false);
@@ -198,7 +507,7 @@ const WidgetCard = React.memo(({
         };
 
         fetchData();
-    }, [widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.colorScheme, widget.customColor, widget.colorByCategory, widget.orientation, widget.columnAggregations, widget.latitudeField, widget.longitudeField, datasetId]);
+    }, [configIssue, widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.colorScheme, widget.customColor, widget.colorByCategory, widget.orientation, widget.columnAggregations, widget.latitudeField, widget.longitudeField, datasetId]);
 
     return (
         <div
@@ -208,18 +517,22 @@ const WidgetCard = React.memo(({
         >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                    <h5 style={{ fontWeight: 600, fontSize: '0.9375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{widget.title}</h5>
-                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                        {widget.type === 'table'
-                            ? `${widget.columns?.length || 0} fields`
-                            : widget.type === 'card'
-                                ? `${widget.aggregation}(${widget.yAxis})`
-                                : widget.type === 'map'
-                                    ? `${widget.yAxis} by ${widget.latitudeField}/${widget.longitudeField}`
-                            : widget.type === 'treemap'
-                                ? `TreeMap: ${widget.xAxis} x ${widget.yAxis}`
-                                : `${widget.aggregation !== 'NONE' ? `${widget.aggregation}(${widget.yAxis})` : widget.yAxis} by ${widget.xAxis}`}
-                    </p>
+                    {(widget.type !== 'card' || widget.showWidgetTitle !== false) && (
+                        <h5 style={{ fontWeight: 600, fontSize: '0.9375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{widget.title}</h5>
+                    )}
+                    {(widget.type !== 'card' || widget.showWidgetSubtitle !== false) && (
+                        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                            {widget.type === 'table'
+                                ? `${widget.columns?.length || 0} fields`
+                                : widget.type === 'card'
+                                    ? `${widget.aggregation}(${widget.yAxis})`
+                                    : widget.type === 'map'
+                                        ? `${widget.yAxis} by ${widget.latitudeField}/${widget.longitudeField}`
+                                : widget.type === 'treemap'
+                                    ? `TreeMap: ${widget.xAxis} x ${widget.yAxis}`
+                                    : `${widget.aggregation !== 'NONE' ? `${widget.aggregation}(${widget.yAxis})` : widget.yAxis} by ${widget.xAxis}`}
+                        </p>
+                    )}
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                     <button
@@ -281,6 +594,13 @@ const WidgetCard = React.memo(({
                             colorScheme={widget.colorScheme}
                             colorByCategory={widget.colorByCategory}
                             customColor={widget.customColor}
+                            showLegend={widget.showLegend ?? getWidgetDisplayDefaults(widget.type).showLegend}
+                            showTooltip={widget.showTooltip ?? getWidgetDisplayDefaults(widget.type).showTooltip}
+                            showDataLabels={widget.showDataLabels ?? getWidgetDisplayDefaults(widget.type).showDataLabels}
+                            numberFormat={widget.numberFormat ?? getWidgetDisplayDefaults(widget.type).numberFormat}
+                            dateDisplayFormat={widget.dateDisplayFormat ?? getWidgetDisplayDefaults(widget.type).dateDisplayFormat}
+                            showCardLabel={widget.showCardLabel ?? true}
+                            cardValueSize={widget.cardValueSize ?? 'medium'}
                         />
                     </div>
                 )}
@@ -364,6 +684,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const [lastSavedState, setLastSavedState] = useState<string>('');
     const [globalFilters, setGlobalFilters] = useState<GlobalFilter[]>([]);
     const [isCopied, setIsCopied] = useState(false);
+    const [openSettingsSection, setOpenSettingsSection] = useState<WidgetSettingsSection>(null);
 
     const handleCopyURL = () => {
         const url = reportId ? `${typeof window !== 'undefined' ? window.location.origin : ''}/report/${reportId}` : '';
@@ -393,6 +714,12 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
         }
     }, [widgets, reportName, globalFilters, lastSavedState, onChangesStatusChange]);
 
+    useEffect(() => {
+        if (selection.type === 'widget') {
+            setOpenSettingsSection(null);
+        }
+    }, [selection]);
+
     // 1. Manage User Session
     useEffect(() => {
         // Initial session check
@@ -421,13 +748,14 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 const existingReport = reports.find(r => r.id === initialReportId);
 
                 if (existingReport) {
-                    setWidgets(existingReport.widgets);
+                    const sanitizedWidgets = existingReport.widgets.map((widget) => sanitizeWidgetForType(widget as Widget, widget.type as ChartType, dataset));
+                    setWidgets(sanitizedWidgets);
                     setGlobalFilters(existingReport.filters || []);
                     setReportId(existingReport.id);
                     setReportName(existingReport.name);
                     setLastSaved(new Date((existingReport as any).updated_at || existingReport.created_at));
                     setLastSavedState(JSON.stringify({
-                        widgets: existingReport.widgets,
+                        widgets: sanitizedWidgets,
                         reportName: existingReport.name,
                         globalFilters: existingReport.filters || []
                     }));
@@ -474,11 +802,12 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
 
         setIsSaving(true);
         try {
+            const sanitizedWidgets = widgets.map((widget) => sanitizeWidgetForType(widget, widget.type, dataset));
             const reportData: any = {
                 dataset_id: dataset.id,
                 user_id: user.id,
                 name: nameToSave,
-                widgets: widgets,
+                widgets: sanitizedWidgets,
                 filters: globalFilters
             };
 
@@ -491,8 +820,9 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             if (saved && saved.id) {
                 setReportId(saved.id);
                 setReportName(nameToSave);
+                setWidgets(sanitizedWidgets);
                 setLastSavedState(JSON.stringify({
-                    widgets: widgets,
+                    widgets: sanitizedWidgets,
                     reportName: nameToSave,
                     globalFilters: globalFilters
                 }));
@@ -502,7 +832,10 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             setLastSaved(new Date());
             setIsReportSettingsOpen(false);
         } catch (err) {
-            console.error('Error saving report:', err);
+            appLogger.error('analytics', 'SAVE_REPORT_FROM_CANVAS_FAILED', 'Failed to save report from canvas.', {
+                error: err,
+                meta: { datasetId: dataset.id, reportId }
+            });
             alert('Failed to save report.');
         } finally {
             setIsSaving(false);
@@ -515,34 +848,44 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             return;
         }
 
-        const numericCol = dataset.stats.find(s => ['BIGINT', 'DOUBLE', 'INTEGER', 'DECIMAL'].includes(s.type))?.column || dataset.columns[1]?.name;
-        const categoricalCol = dataset.columns[0]?.name;
-        const latitudeCol = dataset.columns.find(col => /^(lat|latitude)$/i.test(col.name))?.name || dataset.columns[0]?.name;
-        const longitudeCol = dataset.columns.find(col => /^(lng|lon|longitude)$/i.test(col.name))?.name || dataset.columns[1]?.name || dataset.columns[0]?.name;
-
         // Horizontal filling logic: 3 columns per row
         const nextIndex = widgets.length;
         const x = nextIndex % 3;
         const y = Math.floor(nextIndex / 3) * 2;
+        const widgetDefaults = getWidgetTypeDefaults(type, dataset);
 
         const newWidget: Widget = {
             id: Math.random().toString(36).substr(2, 9),
             type,
-            title: type === 'pie' ? `Top 10 - ${numericCol} by ${categoricalCol}` : type === 'card' ? `Nuevo indicador de ${numericCol}` : type === 'map' ? `Nuevo mapa de ${numericCol}` : `Nuevo Gráfico de ${type}`,
-            xAxis: categoricalCol,
-            yAxis: numericCol,
-            aggregation: type === 'map' ? 'SUM' : type === 'card' ? 'SUM' : 'SUM',
-            columns: type === 'table' ? [categoricalCol, numericCol] : undefined,
-            latitudeField: type === 'map' ? latitudeCol : undefined,
-            longitudeField: type === 'map' ? longitudeCol : undefined,
+            xAxis: widgetDefaults.xAxis || '',
+            yAxis: widgetDefaults.yAxis || '',
+            aggregation: widgetDefaults.aggregation || 'SUM',
+            columns: widgetDefaults.columns,
+            columnAggregations: widgetDefaults.columnAggregations,
+            latitudeField: widgetDefaults.latitudeField,
+            longitudeField: widgetDefaults.longitudeField,
+            topN: widgetDefaults.topN,
+            orientation: widgetDefaults.orientation,
+            colorScheme: widgetDefaults.colorScheme,
+            colorByCategory: widgetDefaults.colorByCategory,
+            showLegend: widgetDefaults.showLegend,
+            showTooltip: widgetDefaults.showTooltip,
+            showDataLabels: widgetDefaults.showDataLabels,
+            numberFormat: widgetDefaults.numberFormat,
+            dateDisplayFormat: widgetDefaults.dateDisplayFormat,
+            showWidgetTitle: widgetDefaults.showWidgetTitle,
+            showWidgetSubtitle: widgetDefaults.showWidgetSubtitle,
+            showCardLabel: widgetDefaults.showCardLabel,
+            cardValueSize: widgetDefaults.cardValueSize,
             x,
             y,
             w: type === 'card' ? 1 : type === 'map' ? 2 : 1,
             h: type === 'card' ? 2 : type === 'map' ? 3 : 3,
-            topN: type === 'pie' ? 10 : undefined,
-            colorScheme: 'varied',
-            colorByCategory: true,
-            orientation: (type === 'bar') ? 'vertical' : undefined
+            title: buildDefaultWidgetTitle({
+                type,
+                xAxis: widgetDefaults.xAxis || '',
+                yAxis: widgetDefaults.yAxis || ''
+            })
         };
         setWidgets([...widgets, newWidget]);
         setSelection({ type: 'widget', id: newWidget.id });
@@ -557,10 +900,17 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const updateWidget = (id: string, updates: Partial<Widget>) => {
         setWidgets(widgets.map(w => {
             if (w.id === id) {
-                const updated = { ...w, ...updates };
-                // Handle dynamic title for Pie chart if TopN or column changes
-                if (updated.type === 'pie' && (updates.topN || updates.xAxis || updates.yAxis)) {
-                    updated.title = `Top ${updated.topN || 10} - ${updated.yAxis} by ${updated.xAxis}`;
+                const updated = updates.type && updates.type !== w.type
+                    ? sanitizeWidgetForType({ ...w, ...updates }, updates.type, dataset)
+                    : { ...w, ...updates };
+                const titleRelevantUpdates = updates.type !== undefined
+                    || updates.xAxis !== undefined
+                    || updates.yAxis !== undefined
+                    || updates.latitudeField !== undefined
+                    || updates.longitudeField !== undefined;
+
+                if (titleRelevantUpdates && updates.title === undefined && shouldRefreshWidgetTitle(w)) {
+                    updated.title = buildDefaultWidgetTitle(updated);
                 }
                 return updated;
             }
@@ -569,6 +919,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     };
 
     const activeWidget = selection.type === 'widget' ? widgets.find(w => w.id === selection.id) : null;
+    const activePresentationSupport = activeWidget ? PRESENTATION_CONTROL_SUPPORT[activeWidget.type] : null;
 
     const aggregations: AggregationType[] = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX', 'NONE'];
     const colorSchemes = [
@@ -576,6 +927,559 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
         { id: 'blues', label: 'Blues (Auto)', icon: SphereIcon },
         { id: 'solid', label: 'Solid (Single)', icon: SphereIcon }
     ];
+
+    const renderSettingsSection = (section: WidgetSettingsSection, title: string, content: React.ReactNode) => {
+        const isOpen = openSettingsSection === section;
+
+        return (
+            <div
+                style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px',
+                    paddingBottom: '4px',
+                    borderBottom: isOpen ? 'none' : '1px solid rgba(255, 255, 255, 0.05)'
+                }}
+            >
+                <button
+                    onClick={() => setOpenSettingsSection(current => current === section ? null : section)}
+                    style={{
+                        width: '100%',
+                        padding: '0 0 4px',
+                        background: 'transparent',
+                        border: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        color: 'var(--foreground)',
+                        cursor: 'pointer'
+                    }}
+                >
+                    <span style={{ fontSize: '0.76rem', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                        {title}
+                    </span>
+                    <ChevronDown
+                        size={14}
+                        style={{
+                            color: 'var(--text-muted)',
+                            transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.2s ease'
+                        }}
+                    />
+                </button>
+                {isOpen && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingBottom: '4px' }}>
+                        {content}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const renderDataSettings = () => {
+        if (!activeWidget) return null;
+
+        const titleControl = (
+            <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Title</label>
+                <input
+                    type="text"
+                    value={activeWidget.title}
+                    onChange={(e) => updateWidget(activeWidget.id, { title: e.target.value })}
+                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                />
+            </div>
+        );
+
+        if (activeWidget.type === 'table') {
+            return titleControl;
+        }
+
+        if (activeWidget.type === 'card') {
+            return (
+                <>
+                    {titleControl}
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Value Field</label>
+                        <select
+                            value={activeWidget.yAxis}
+                            onChange={(e) => updateWidget(activeWidget.id, { yAxis: e.target.value })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        >
+                            {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                        </select>
+                    </div>
+                </>
+            );
+        }
+
+        if (activeWidget.type === 'map') {
+            return (
+                <>
+                    {titleControl}
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Label</label>
+                        <select
+                            value={activeWidget.xAxis}
+                            onChange={(e) => updateWidget(activeWidget.id, { xAxis: e.target.value })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        >
+                            {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                        </select>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        <div>
+                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Latitude</label>
+                            <select
+                                value={activeWidget.latitudeField || ''}
+                                onChange={(e) => updateWidget(activeWidget.id, { latitudeField: e.target.value })}
+                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                            >
+                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Longitude</label>
+                            <select
+                                value={activeWidget.longitudeField || ''}
+                                onChange={(e) => updateWidget(activeWidget.id, { longitudeField: e.target.value })}
+                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                            >
+                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Value</label>
+                        <select
+                            value={activeWidget.yAxis}
+                            onChange={(e) => updateWidget(activeWidget.id, { yAxis: e.target.value })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        >
+                            {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                        </select>
+                    </div>
+                </>
+            );
+        }
+
+        return (
+            <>
+                {titleControl}
+                <div>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>X-Axis (Dimensión)</label>
+                    <select
+                        value={activeWidget.xAxis}
+                        onChange={(e) => updateWidget(activeWidget.id, { xAxis: e.target.value })}
+                        style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                    >
+                        {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                    </select>
+                </div>
+                <div>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Y-Axis ({activeWidget.type === 'treemap' ? 'Dimensión 2' : 'Value'})</label>
+                    <select
+                        value={activeWidget.yAxis}
+                        onChange={(e) => updateWidget(activeWidget.id, { yAxis: e.target.value })}
+                        style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                    >
+                        {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
+                    </select>
+                </div>
+            </>
+        );
+    };
+
+    const renderQuerySettings = () => {
+        if (!activeWidget) return null;
+
+        if (activeWidget.type === 'table') {
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block' }}>Gestión de Columnas</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '380px', overflowY: 'auto', padding: '10px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px' }}>
+                        {(() => {
+                            const selectedCols = activeWidget.columns || [];
+                            const availableCols = dataset.columns.filter(c => !selectedCols.includes(c.name));
+                            const allOrdered = [
+                                ...selectedCols.map(name => dataset.columns.find(c => c.name === name)!),
+                                ...availableCols
+                            ];
+
+                            return allOrdered.map((col) => {
+                                if (!col) return null;
+                                const isSelected = selectedCols.includes(col.name);
+                                const selIdx = selectedCols.indexOf(col.name);
+                                const agg = activeWidget.columnAggregations?.[col.name] || 'NONE';
+
+                                return (
+                                    <div key={col.name} style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px',
+                                        padding: '6px 8px',
+                                        background: isSelected ? 'rgba(255,255,255,0.03)' : 'transparent',
+                                        borderRadius: '6px',
+                                        border: '1px solid',
+                                        borderColor: isSelected ? 'var(--border)' : 'transparent',
+                                        transition: 'all 0.2s'
+                                    }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            onChange={(e) => {
+                                                const newCols = e.target.checked
+                                                    ? [...selectedCols, col.name]
+                                                    : selectedCols.filter(c => c !== col.name);
+                                                updateWidget(activeWidget.id, { columns: newCols });
+                                            }}
+                                            style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                        />
+
+                                        <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <span style={{
+                                                fontSize: '0.8125rem',
+                                                fontWeight: isSelected ? 500 : 400,
+                                                color: isSelected ? 'var(--foreground)' : 'var(--text-muted)',
+                                                whiteSpace: 'nowrap',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis'
+                                            }}>
+                                                {col.name}
+                                            </span>
+                                        </div>
+
+                                        {isSelected && (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                                <select
+                                                    value={agg}
+                                                    onChange={(e) => {
+                                                        const newAggs = { ...(activeWidget.columnAggregations || {}), [col.name]: e.target.value as AggregationType };
+                                                        updateWidget(activeWidget.id, { columnAggregations: newAggs });
+                                                    }}
+                                                    style={{
+                                                        background: 'rgba(255,255,255,0.05)',
+                                                        border: '1px solid var(--border)',
+                                                        borderRadius: '4px',
+                                                        fontSize: '0.65rem',
+                                                        width: '52px',
+                                                        minWidth: '52px',
+                                                        padding: '1px 2px',
+                                                        color: 'var(--text-muted)',
+                                                        cursor: 'pointer',
+                                                        marginRight: '4px'
+                                                    }}
+                                                >
+                                                    <option value="NONE">NONE</option>
+                                                    <option value="SUM">SUM</option>
+                                                    <option value="AVG">AVG</option>
+                                                    <option value="COUNT">CNT</option>
+                                                    <option value="DISTINCT">DST</option>
+                                                </select>
+
+                                                <button
+                                                    disabled={selIdx === 0}
+                                                    onClick={() => {
+                                                        const newCols = [...selectedCols];
+                                                        [newCols[selIdx], newCols[selIdx - 1]] = [newCols[selIdx - 1], newCols[selIdx]];
+                                                        updateWidget(activeWidget.id, { columns: newCols });
+                                                    }}
+                                                    style={{ padding: '2px', color: selIdx === 0 ? 'rgba(255,255,255,0.1)' : 'var(--text-muted)', background: 'transparent', border: 'none', cursor: selIdx === 0 ? 'default' : 'pointer' }}
+                                                >
+                                                    <ChevronUp size={12} />
+                                                </button>
+                                                <button
+                                                    disabled={selIdx === selectedCols.length - 1}
+                                                    onClick={() => {
+                                                        const newCols = [...selectedCols];
+                                                        [newCols[selIdx], newCols[selIdx + 1]] = [newCols[selIdx + 1], newCols[selIdx]];
+                                                        updateWidget(activeWidget.id, { columns: newCols });
+                                                    }}
+                                                    style={{ padding: '2px', color: selIdx === selectedCols.length - 1 ? 'rgba(255,255,255,0.1)' : 'var(--text-muted)', background: 'transparent', border: 'none', cursor: selIdx === selectedCols.length - 1 ? 'default' : 'pointer' }}
+                                                >
+                                                    <ChevronDown size={12} />
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            });
+                        })()}
+                    </div>
+                </div>
+            );
+        }
+
+        if (activeWidget.type === 'card') {
+            return (
+                <div>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Aggregation</label>
+                    <select
+                        value={activeWidget.aggregation || 'SUM'}
+                        onChange={(e) => updateWidget(activeWidget.id, { aggregation: e.target.value as AggregationType })}
+                        style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                    >
+                        {aggregations.filter(agg => agg !== 'NONE').map(agg => <option key={agg} value={agg}>{agg}</option>)}
+                    </select>
+                </div>
+            );
+        }
+
+        if (activeWidget.type === 'map') {
+            return (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Aggregation</label>
+                        <select
+                            value={activeWidget.aggregation || 'SUM'}
+                            onChange={(e) => updateWidget(activeWidget.id, { aggregation: e.target.value as AggregationType })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        >
+                            {aggregations.map(agg => <option key={agg} value={agg}>{agg}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Top N</label>
+                        <input
+                            type="number"
+                            value={activeWidget.topN || ''}
+                            placeholder="500"
+                            onChange={(e) => updateWidget(activeWidget.id, { topN: e.target.value ? parseInt(e.target.value) : undefined })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
+        return (
+            <>
+                {activeWidget.type !== 'treemap' && (
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Aggregation</label>
+                        <select
+                            value={activeWidget.aggregation || 'NONE'}
+                            onChange={(e) => updateWidget(activeWidget.id, { aggregation: e.target.value as AggregationType })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        >
+                            {aggregations.map(agg => <option key={agg} value={agg}>{agg}</option>)}
+                        </select>
+                    </div>
+                )}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Order</label>
+                        <select
+                            value={activeWidget.orderBy || ''}
+                            onChange={(e) => updateWidget(activeWidget.id, { orderBy: e.target.value as Widget['orderBy'] || undefined })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        >
+                            <option value="">None</option>
+                            <option value="ASC">Ascending</option>
+                            <option value="DESC">Descending</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Top N</label>
+                        <input
+                            type="number"
+                            value={activeWidget.topN || ''}
+                            placeholder="All"
+                            onChange={(e) => updateWidget(activeWidget.id, { topN: e.target.value ? parseInt(e.target.value) : undefined })}
+                            style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                        />
+                    </div>
+                </div>
+            </>
+        );
+    };
+
+    const renderPresentationSettings = () => {
+        if (!activeWidget || !activePresentationSupport) return null;
+
+        return (
+            <>
+                {activeWidget.type === 'bar' && (
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Orientation</label>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            <button
+                                onClick={() => updateWidget(activeWidget.id, { orientation: 'vertical' })}
+                                style={{ padding: '8px', fontSize: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', background: activeWidget.orientation === 'vertical' ? 'var(--primary-glow)' : 'transparent', color: activeWidget.orientation === 'vertical' ? 'var(--primary)' : 'var(--text-muted)' }}
+                            >
+                                Column (V)
+                            </button>
+                            <button
+                                onClick={() => updateWidget(activeWidget.id, { orientation: 'horizontal' })}
+                                style={{ padding: '8px', fontSize: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', background: activeWidget.orientation === 'horizontal' ? 'var(--primary-glow)' : 'transparent', color: activeWidget.orientation === 'horizontal' ? 'var(--primary)' : 'var(--text-muted)' }}
+                            >
+                                Bar (H)
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {(activePresentationSupport.legend || activePresentationSupport.tooltip || activePresentationSupport.dataLabels) && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        {activePresentationSupport.legend && (
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={activeWidget.showLegend ?? getWidgetDisplayDefaults(activeWidget.type).showLegend}
+                                    onChange={(e) => updateWidget(activeWidget.id, { showLegend: e.target.checked })}
+                                    style={{ accentColor: 'var(--accent)' }}
+                                />
+                                Legend
+                            </label>
+                        )}
+                        {activePresentationSupport.tooltip && (
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={activeWidget.showTooltip ?? getWidgetDisplayDefaults(activeWidget.type).showTooltip}
+                                    onChange={(e) => updateWidget(activeWidget.id, { showTooltip: e.target.checked })}
+                                    style={{ accentColor: 'var(--accent)' }}
+                                />
+                                Tooltip
+                            </label>
+                        )}
+                        {activePresentationSupport.dataLabels && (
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={activeWidget.showDataLabels ?? getWidgetDisplayDefaults(activeWidget.type).showDataLabels}
+                                    onChange={(e) => updateWidget(activeWidget.id, { showDataLabels: e.target.checked })}
+                                    style={{ accentColor: 'var(--accent)' }}
+                                />
+                                Data labels
+                            </label>
+                        )}
+                    </div>
+                )}
+
+                {activePresentationSupport.colors && (
+                    <div>
+                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Color Scheme</label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            {colorSchemes.map(scheme => (
+                                <button
+                                    key={scheme.id}
+                                    onClick={() => updateWidget(activeWidget.id, { colorScheme: scheme.id as Widget['colorScheme'] })}
+                                    style={{
+                                        padding: '8px 12px',
+                                        background: activeWidget.colorScheme === scheme.id ? 'var(--primary-glow)' : 'var(--surface)',
+                                        border: activeWidget.colorScheme === scheme.id ? '1px solid var(--primary)' : '1px solid var(--border)',
+                                        borderRadius: '6px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px',
+                                        fontSize: '0.8125rem',
+                                        color: activeWidget.colorScheme === scheme.id ? 'var(--primary)' : 'var(--text-muted)'
+                                    }}
+                                >
+                                    <scheme.icon size={14} /> {scheme.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {activeWidget.colorScheme === 'solid' && (
+                            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', background: 'var(--surface-light)', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Custom color</label>
+                                <input
+                                    type="color"
+                                    value={activeWidget.customColor || '#8b5cf6'}
+                                    onChange={(e) => updateWidget(activeWidget.id, { customColor: e.target.value })}
+                                    style={{ width: '32px', height: '32px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: 'transparent' }}
+                                />
+                                <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                                    {activeWidget.customColor || '#8b5cf6'}
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {(activePresentationSupport.numberFormat || activePresentationSupport.dateFormat) && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        {activePresentationSupport.numberFormat && (
+                            <div>
+                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Number format</label>
+                                <select
+                                    value={activeWidget.numberFormat || getWidgetDisplayDefaults(activeWidget.type).numberFormat}
+                                    onChange={(e) => updateWidget(activeWidget.id, { numberFormat: e.target.value as Widget['numberFormat'] })}
+                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                                >
+                                    <option value="standard">Standard</option>
+                                    <option value="compact">Compact</option>
+                                </select>
+                            </div>
+                        )}
+                        {activePresentationSupport.dateFormat && (
+                            <div>
+                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Date format</label>
+                                <select
+                                    value={activeWidget.dateDisplayFormat || getWidgetDisplayDefaults(activeWidget.type).dateDisplayFormat}
+                                    onChange={(e) => updateWidget(activeWidget.id, { dateDisplayFormat: e.target.value as Widget['dateDisplayFormat'] })}
+                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                                >
+                                    <option value="default">DD/MM/YYYY</option>
+                                    <option value="short">Short</option>
+                                </select>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {activeWidget.type === 'card' && (
+                    <>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={activeWidget.showWidgetTitle ?? true}
+                                    onChange={(e) => updateWidget(activeWidget.id, { showWidgetTitle: e.target.checked })}
+                                    style={{ accentColor: 'var(--accent)' }}
+                                />
+                                Título
+                            </label>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={activeWidget.showWidgetSubtitle ?? true}
+                                    onChange={(e) => updateWidget(activeWidget.id, { showWidgetSubtitle: e.target.checked })}
+                                    style={{ accentColor: 'var(--accent)' }}
+                                />
+                                Subtítulo
+                            </label>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={activeWidget.showCardLabel ?? true}
+                                    onChange={(e) => updateWidget(activeWidget.id, { showCardLabel: e.target.checked })}
+                                    style={{ accentColor: 'var(--accent)' }}
+                                />
+                                Label del valor
+                            </label>
+                            <div>
+                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Tamaño del valor</label>
+                                <select
+                                    value={activeWidget.cardValueSize || 'medium'}
+                                    onChange={(e) => updateWidget(activeWidget.id, { cardValueSize: e.target.value as Widget['cardValueSize'] })}
+                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
+                                >
+                                    <option value="small">Pequeño</option>
+                                    <option value="medium">Mediano</option>
+                                    <option value="large">Grande</option>
+                                </select>
+                            </div>
+                        </div>
+                    </>
+                )}
+            </>
+        );
+    };
 
     const handleDeleteReport = async () => {
         if (!reportId) return;
@@ -586,7 +1490,10 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                     if (onReportDeleted) onReportDeleted();
                 }
             } catch (err) {
-                console.error('Error deleting report:', err);
+                appLogger.error('analytics', 'DELETE_REPORT_FROM_CANVAS_FAILED', 'Failed to delete report from canvas.', {
+                    error: err,
+                    meta: { reportId }
+                });
                 alert('No se pudo eliminar el reporte.');
             }
         }
@@ -611,7 +1518,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
         <div style={{ display: 'flex', gap: '0', alignItems: 'stretch', minHeight: '100vh', marginLeft: '-18px', marginTop: '-18px' }}>
             {/* Sidebar: Data Fields & Visual Types */}
             <div className={`canvas-sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`} style={{
-                width: isSidebarCollapsed ? '80px' : '260px',
+                width: isSidebarCollapsed ? '80px' : '220px',
                 display: 'flex',
                 flexDirection: 'column',
                 position: 'sticky',
@@ -628,7 +1535,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                         position: 'absolute',
                         right: isSidebarCollapsed ? 'auto' : '-12px',
                         left: isSidebarCollapsed ? 'auto' : 'auto',
-                        top: '40px',
+                        top: '30px',
                         background: 'rgba(255, 255, 255, 0.12)',
                         border: '1px solid rgba(255, 255, 255, 0.18)',
                         borderRadius: '999px',
@@ -650,18 +1557,17 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                         {/* Sticky Save Section */}
                         {user && (
                             <div style={{
-                                padding: '32px 24px 24px',
-                                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                                padding: '24px 18px 18px',
                                 background: 'rgba(255,255,255,0.02)'
                             }}>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '8px' }}>
                                     <button
                                         onClick={() => handleSave(false)}
                                         disabled={isSaving || !dataset.id}
                                         className="btn-primary"
                                         style={{
                                             width: '100%',
-                                            padding: '12px',
+                                            padding: '11px',
                                             display: 'flex',
                                             alignItems: 'center',
                                             justifyContent: 'center',
@@ -684,7 +1590,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                             className="btn-secondary"
                                             style={{
                                                 width: '100%',
-                                                padding: '10px',
+                                                padding: '9px',
                                                 display: 'flex',
                                                 alignItems: 'center',
                                                 justifyContent: 'center',
@@ -702,7 +1608,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                         className="btn-secondary"
                                         style={{
                                             width: '100%',
-                                            padding: '10px',
+                                            padding: '9px',
                                             display: 'flex',
                                             alignItems: 'center',
                                             justifyContent: 'center',
@@ -730,13 +1636,13 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                         )}
 
                         {/* Scrollable Content Section */}
-                        <div style={{ padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: '32px' }}>
+                        <div style={{ padding: '18px 14px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
                             {isReportSettingsOpen ? (
                                 <div className="animate-in slide-in-from-left duration-300">
-                                    <h4 style={{ marginBottom: '16px', fontSize: '0.875rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    <h4 style={{ marginBottom: '12px', fontSize: '0.84rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                         Report Settings
                                     </h4>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                                         <div>
                                             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>{t('canvas.view_url')}</label>
                                             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -784,13 +1690,13 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                             </p>
                                         </div>
 
-                                        <div style={{ paddingTop: '20px', borderTop: '1px solid var(--border)' }}>
+                                        <div style={{ paddingTop: '14px' }}>
                                             <button
                                                 onClick={handleDeleteReport}
                                                 disabled={!reportId}
                                                 style={{
                                                     width: '100%',
-                                                    padding: '12px',
+                                                    padding: '10px',
                                                     background: 'rgba(248, 113, 113, 0.1)',
                                                     border: '1px solid rgba(248, 113, 113, 0.2)',
                                                     borderRadius: '8px',
@@ -813,7 +1719,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                 <>
                                     {selection.type === 'filters' ? (
                                         <div className="animate-in slide-in-from-left duration-300">
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                                 <h4 style={{ fontSize: '0.875rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                                     {t('canvas.filters_config')}
                                                 </h4>
@@ -821,15 +1727,15 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                     <X size={14} />
                                                 </button>
                                             </div>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                                 <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
                                                     Drag and drop dataset fields into the Filter Bar at the top of the canvas to create global filters.
                                                 </p>
-                                                <div style={{ paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+                                                <div style={{ paddingTop: '12px' }}>
                                                     <h5 style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '12px' }}>{t('canvas.active_filters')} ({globalFilters.length})</h5>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                                         {globalFilters.map(f => (
-                                                            <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', background: 'var(--surface-light)', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                                                            <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'var(--surface-light)', borderRadius: '8px', border: '1px solid var(--border)' }}>
                                                                 <span style={{ fontSize: '0.8125rem' }}>{f.column}</span>
                                                                 <button onClick={() => removeGlobalFilter(f.id)} style={{ background: 'transparent', border: 'none', color: '#f87171', cursor: 'pointer' }}>
                                                                     <X size={14} />
@@ -842,7 +1748,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                         </div>
                                     ) : activeWidget ? (
                                         <div className="animate-in slide-in-from-left duration-300">
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                                 <h4 style={{ fontSize: '0.875rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                                     Widget Settings
                                                 </h4>
@@ -850,7 +1756,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                     <X size={14} />
                                                 </button>
                                             </div>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0 }}>
                                                 <div>
                                                     <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Chart Type</label>
                                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
@@ -883,362 +1789,22 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                         ))}
                                                     </div>
                                                 </div>
-
-                                                {(activeWidget.type === 'bar') && (
-                                                    <div>
-                                                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Orientation</label>
-                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                                                            <button
-                                                                onClick={() => updateWidget(activeWidget.id, { orientation: 'vertical' })}
-                                                                style={{ padding: '8px', fontSize: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', background: activeWidget.orientation === 'vertical' ? 'var(--primary-glow)' : 'transparent', color: activeWidget.orientation === 'vertical' ? 'var(--primary)' : 'var(--text-muted)' }}
-                                                            >
-                                                                Column (V)
-                                                            </button>
-                                                            <button
-                                                                onClick={() => updateWidget(activeWidget.id, { orientation: 'horizontal' })}
-                                                                style={{ padding: '8px', fontSize: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', background: activeWidget.orientation === 'horizontal' ? 'var(--primary-glow)' : 'transparent', color: activeWidget.orientation === 'horizontal' ? 'var(--primary)' : 'var(--text-muted)' }}
-                                                            >
-                                                                Bar (H)
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                <div>
-                                                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Title</label>
-                                                    <input
-                                                        type="text"
-                                                        value={activeWidget.title}
-                                                        onChange={(e) => updateWidget(activeWidget.id, { title: e.target.value })}
-                                                        style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                    />
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: 'calc(100vh - 220px)', overflowY: 'auto', paddingRight: '4px' }}>
+                                                    {renderSettingsSection('data', 'Datos', renderDataSettings())}
+                                                    {renderSettingsSection('query', 'Consulta', renderQuerySettings())}
+                                                    {activePresentationSupport && renderSettingsSection('presentation', 'Presentación', renderPresentationSettings())}
                                                 </div>
-
-                                                {/* Color Settings */}
-                                                {(['bar', 'pie', 'treemap'].includes(activeWidget.type)) && (
-                                                    <div>
-                                                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Color Scheme</label>
-                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                            {colorSchemes.map(scheme => (
-                                                                <button
-                                                                    key={scheme.id}
-                                                                    onClick={() => updateWidget(activeWidget.id, { colorScheme: scheme.id as any })}
-                                                                    style={{
-                                                                        padding: '8px 12px',
-                                                                        background: activeWidget.colorScheme === scheme.id ? 'var(--primary-glow)' : 'var(--surface)',
-                                                                        border: activeWidget.colorScheme === scheme.id ? '1px solid var(--primary)' : '1px solid var(--border)',
-                                                                        borderRadius: '6px',
-                                                                        display: 'flex',
-                                                                        alignItems: 'center',
-                                                                        gap: '8px',
-                                                                        fontSize: '0.8125rem',
-                                                                        color: activeWidget.colorScheme === scheme.id ? 'var(--primary)' : 'var(--text-muted)'
-                                                                    }}
-                                                                >
-                                                                    <scheme.icon size={14} /> {scheme.label}
-                                                                </button>
-                                                            ))}
-                                                        </div>
-
-                                                        {activeWidget.colorScheme === 'solid' && (
-                                                            <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', background: 'var(--surface-light)', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Color Personalizado:</label>
-                                                                <input
-                                                                    type="color"
-                                                                    value={activeWidget.customColor || '#8b5cf6'}
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { customColor: e.target.value })}
-                                                                    style={{
-                                                                        width: '32px',
-                                                                        height: '32px',
-                                                                        border: 'none',
-                                                                        borderRadius: '4px',
-                                                                        cursor: 'pointer',
-                                                                        background: 'transparent'
-                                                                    }}
-                                                                />
-                                                                <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
-                                                                    {activeWidget.customColor || '#8b5cf6'}
-                                                                </span>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
-
-                                                {activeWidget.type === 'table' ? (
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block' }}>Gestión de Columnas</label>
-                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '380px', overflowY: 'auto', padding: '10px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-                                                            {(() => {
-                                                                const selectedCols = activeWidget.columns || [];
-                                                                const availableCols = dataset.columns.filter(c => !selectedCols.includes(c.name));
-                                                                const allOrdered = [
-                                                                    ...selectedCols.map(name => dataset.columns.find(c => c.name === name)!),
-                                                                    ...availableCols
-                                                                ];
-
-                                                                return allOrdered.map((col, idx) => {
-                                                                    if (!col) return null;
-                                                                    const isSelected = selectedCols.includes(col.name);
-                                                                    const selIdx = selectedCols.indexOf(col.name);
-                                                                    const agg = activeWidget.columnAggregations?.[col.name] || 'NONE';
-
-                                                                    return (
-                                                                        <div key={col.name} style={{
-                                                                            display: 'flex',
-                                                                            alignItems: 'center',
-                                                                            gap: '8px',
-                                                                            padding: '6px 8px',
-                                                                            background: isSelected ? 'rgba(255,255,255,0.03)' : 'transparent',
-                                                                            borderRadius: '6px',
-                                                                            border: '1px solid',
-                                                                            borderColor: isSelected ? 'var(--border)' : 'transparent',
-                                                                            transition: 'all 0.2s'
-                                                                        }}>
-                                                                            <input
-                                                                                type="checkbox"
-                                                                                checked={isSelected}
-                                                                                onChange={(e) => {
-                                                                                    const newCols = e.target.checked
-                                                                                        ? [...selectedCols, col.name]
-                                                                                        : selectedCols.filter(c => c !== col.name);
-                                                                                    updateWidget(activeWidget.id, { columns: newCols });
-                                                                                }}
-                                                                                style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                                                            />
-
-                                                                            <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                                                <span style={{
-                                                                                    fontSize: '0.8125rem',
-                                                                                    fontWeight: isSelected ? 500 : 400,
-                                                                                    color: isSelected ? 'var(--foreground)' : 'var(--text-muted)',
-                                                                                    whiteSpace: 'nowrap',
-                                                                                    overflow: 'hidden',
-                                                                                    textOverflow: 'ellipsis'
-                                                                                }}>
-                                                                                    {col.name}
-                                                                                </span>
-                                                                            </div>
-
-                                                                            {isSelected && (
-                                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                                                                                    {/* Aggregation Select */}
-                                                                                    <select
-                                                                                        value={agg}
-                                                                                        onChange={(e) => {
-                                                                                            const newAggs = { ...(activeWidget.columnAggregations || {}), [col.name]: e.target.value as AggregationType };
-                                                                                            updateWidget(activeWidget.id, { columnAggregations: newAggs });
-                                                                                        }}
-                                                                                        style={{
-                                                                                            background: 'rgba(255,255,255,0.05)',
-                                                                                            border: '1px solid var(--border)',
-                                                                                            borderRadius: '4px',
-                                                                                            fontSize: '0.65rem',
-                                                                                            width: '52px',
-                                                                                            minWidth: '52px',
-                                                                                            padding: '1px 2px',
-                                                                                            color: 'var(--text-muted)',
-                                                                                            cursor: 'pointer',
-                                                                                            marginRight: '4px'
-                                                                                        }}
-                                                                                    >
-                                                                                        <option value="NONE">NONE</option>
-                                                                                        <option value="SUM">SUM</option>
-                                                                                        <option value="AVG">AVG</option>
-                                                                                        <option value="COUNT">CNT</option>
-                                                                                        <option value="DISTINCT">DST</option>
-                                                                                    </select>
-
-                                                                                    <button
-                                                                                        disabled={selIdx === 0}
-                                                                                        onClick={() => {
-                                                                                            const newCols = [...selectedCols];
-                                                                                            [newCols[selIdx], newCols[selIdx - 1]] = [newCols[selIdx - 1], newCols[selIdx]];
-                                                                                            updateWidget(activeWidget.id, { columns: newCols });
-                                                                                        }}
-                                                                                        style={{ padding: '2px', color: selIdx === 0 ? 'rgba(255,255,255,0.1)' : 'var(--text-muted)', background: 'transparent', border: 'none', cursor: selIdx === 0 ? 'default' : 'pointer' }}
-                                                                                    >
-                                                                                        <ChevronUp size={12} />
-                                                                                    </button>
-                                                                                    <button
-                                                                                        disabled={selIdx === selectedCols.length - 1}
-                                                                                        onClick={() => {
-                                                                                            const newCols = [...selectedCols];
-                                                                                            [newCols[selIdx], newCols[selIdx + 1]] = [newCols[selIdx + 1], newCols[selIdx]];
-                                                                                            updateWidget(activeWidget.id, { columns: newCols });
-                                                                                        }}
-                                                                                        style={{ padding: '2px', color: selIdx === selectedCols.length - 1 ? 'rgba(255,255,255,0.1)' : 'var(--text-muted)', background: 'transparent', border: 'none', cursor: selIdx === selectedCols.length - 1 ? 'default' : 'pointer' }}
-                                                                                    >
-                                                                                        <ChevronDown size={12} />
-                                                                                    </button>
-                                                                                </div>
-                                                                            )}
-                                                                        </div>
-                                                                    );
-                                                                });
-                                                            })()}
-                                                        </div>
-                                                    </div>
-                                                ) : activeWidget.type === 'card' ? (
-                                                    <>
-                                                        <div>
-                                                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Value Field</label>
-                                                            <select
-                                                                value={activeWidget.yAxis}
-                                                                onChange={(e) => updateWidget(activeWidget.id, { yAxis: e.target.value })}
-                                                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                            >
-                                                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                            </select>
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Aggregation</label>
-                                                            <select
-                                                                value={activeWidget.aggregation || 'SUM'}
-                                                                onChange={(e) => updateWidget(activeWidget.id, { aggregation: e.target.value as AggregationType })}
-                                                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                            >
-                                                                {aggregations.filter(agg => agg !== 'NONE').map(agg => <option key={agg} value={agg}>{agg}</option>)}
-                                                            </select>
-                                                        </div>
-                                                    </>
-                                                ) : activeWidget.type === 'map' ? (
-                                                    <>
-                                                        <div>
-                                                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Label</label>
-                                                            <select
-                                                                value={activeWidget.xAxis}
-                                                                onChange={(e) => updateWidget(activeWidget.id, { xAxis: e.target.value })}
-                                                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                            >
-                                                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                            </select>
-                                                        </div>
-                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Latitude</label>
-                                                                <select
-                                                                    value={activeWidget.latitudeField || ''}
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { latitudeField: e.target.value })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                >
-                                                                    {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                                </select>
-                                                            </div>
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Longitude</label>
-                                                                <select
-                                                                    value={activeWidget.longitudeField || ''}
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { longitudeField: e.target.value })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                >
-                                                                    {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                                </select>
-                                                            </div>
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Value</label>
-                                                            <select
-                                                                value={activeWidget.yAxis}
-                                                                onChange={(e) => updateWidget(activeWidget.id, { yAxis: e.target.value })}
-                                                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                            >
-                                                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                            </select>
-                                                        </div>
-                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Aggregation</label>
-                                                                <select
-                                                                    value={activeWidget.aggregation || 'SUM'}
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { aggregation: e.target.value as AggregationType })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                >
-                                                                    {aggregations.map(agg => <option key={agg} value={agg}>{agg}</option>)}
-                                                                </select>
-                                                            </div>
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Top N</label>
-                                                                <input
-                                                                    type="number"
-                                                                    value={activeWidget.topN || ''}
-                                                                    placeholder="500"
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { topN: e.target.value ? parseInt(e.target.value) : undefined })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                />
-                                                            </div>
-                                                        </div>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <div>
-                                                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>X-Axis (Dimensión)</label>
-                                                            <select
-                                                                value={activeWidget.xAxis}
-                                                                onChange={(e) => updateWidget(activeWidget.id, { xAxis: e.target.value })}
-                                                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                            >
-                                                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                            </select>
-                                                        </div>
-                                                        <div>
-                                                            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Y-Axis ({activeWidget.type === 'treemap' ? 'Dimensión 2' : 'Value'})</label>
-                                                            <select
-                                                                value={activeWidget.yAxis}
-                                                                onChange={(e) => updateWidget(activeWidget.id, { yAxis: e.target.value })}
-                                                                style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                            >
-                                                                {dataset.columns.map(col => <option key={col.name} value={col.name}>{col.name}</option>)}
-                                                            </select>
-                                                        </div>
-                                                        {activeWidget.type !== 'treemap' && (
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Aggregation</label>
-                                                                <select
-                                                                    value={activeWidget.aggregation || 'NONE'}
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { aggregation: e.target.value as AggregationType })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                >
-                                                                    {aggregations.map(agg => <option key={agg} value={agg}>{agg}</option>)}
-                                                                </select>
-                                                            </div>
-                                                        )}
-                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Order</label>
-                                                                <select
-                                                                    value={activeWidget.orderBy || ''}
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { orderBy: e.target.value as any || undefined })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                >
-                                                                    <option value="">None</option>
-                                                                    <option value="ASC">Ascending</option>
-                                                                    <option value="DESC">Descending</option>
-                                                                </select>
-                                                            </div>
-                                                            <div>
-                                                                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Top N</label>
-                                                                <input
-                                                                    type="number"
-                                                                    value={activeWidget.topN || ''}
-                                                                    placeholder="All"
-                                                                    onChange={(e) => updateWidget(activeWidget.id, { topN: e.target.value ? parseInt(e.target.value) : undefined })}
-                                                                    style={{ width: '100%', padding: '8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--foreground)', fontSize: '0.875rem' }}
-                                                                />
-                                                            </div>
-                                                        </div>
-                                                    </>
-                                                )}
                                             </div>
                                         </div>
                                     ) : (
                                         <>
                                             <div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                                     <h4 style={{ fontSize: '0.875rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                                         {t('canvas.visualizations')}
                                                     </h4>
                                                 </div>
-                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px' }}>
                                                         {[
                                                             { type: 'bar' as ChartType, icon: BarChart3, label: t('canvas.visuals.bar') },
                                                             { type: 'line' as ChartType, icon: LineIcon, label: t('canvas.visuals.line') },
@@ -1259,7 +1825,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                                 width: '100%',
                                                                 aspectRatio: '1 / 1',
                                                                 background: 'rgba(255, 255, 255, 0.08)',
-                                                                border: '1px solid var(--border)',
+                                                                border: '1px solid transparent',
                                                                 borderRadius: '12px',
                                                                 display: 'flex',
                                                                 alignItems: 'center',
@@ -1278,11 +1844,11 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                             </div>
 
                                             {/* Dataset Fields */}
-                                            <div style={{ marginTop: '32px' }}>
-                                                <h4 style={{ marginBottom: '16px', fontSize: '0.875rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                            <div style={{ marginTop: '24px' }}>
+                                                <h4 style={{ marginBottom: '12px', fontSize: '0.84rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                                     {t('canvas.fields')}
                                                 </h4>
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                                     {dataset.columns.map((col) => (
                                                         <div
                                                             key={col.name}
@@ -1290,7 +1856,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                             onDragStart={(e) => e.dataTransfer.setData('columnName', col.name)}
                                                             className="glass glass-card"
                                                             style={{
-                                                                padding: '10px 14px',
+                                                                padding: '9px 12px',
                                                                 fontSize: '0.8125rem',
                                                                 cursor: 'grab',
                                                                 display: 'flex',
@@ -1358,7 +1924,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 style={{
                     flex: 1,
                     position: 'relative',
-                    padding: '0 40px 40px',
+                    padding: '0 28px 28px',
                     minHeight: 'calc(100vh - 36px)',
                     background: 'var(--background)',
                     overflow: 'visible'
@@ -1371,18 +1937,17 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                     zIndex: 100,
                     background: 'rgba(10, 10, 15, 0.8)', // Dark background matching the theme
                     backdropFilter: 'blur(12px)',
-                    padding: '40px 0 20px',
-                    margin: '0 0 24px',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
+                    padding: '28px 0 16px',
+                    margin: '0 0 18px'
                 }}>
                     {/* Header with Report Name */}
-                    <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', color: 'var(--primary)' }}>
-                                <SphereIcon size={18} />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', color: 'var(--primary)' }}>
+                                <SphereIcon size={16} />
                                 <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{t('sidebar.reports')}</span>
                             </div>
-                            <h2 style={{ fontSize: '1.75rem', fontWeight: 700 }}>{reportName}</h2>
+                            <h2 style={{ fontSize: '1.55rem', fontWeight: 700 }}>{reportName}</h2>
                         </div>
                         {hasUnsavedChanges && (
                             <div style={{ padding: '6px 12px', background: 'rgba(251, 191, 36, 0.1)', border: '1px solid rgba(251, 191, 36, 0.2)', borderRadius: '20px', fontSize: '0.75rem', color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1401,13 +1966,13 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                             if (columnName) addGlobalFilter(columnName);
                         }}
                         style={{
-                            height: '54px',
+                            height: '50px',
                             background: selection.type === 'filters' ? 'rgba(139, 92, 246, 0.08)' : 'rgba(255,255,255,0.03)',
                             border: selection.type === 'filters' ? '1px solid var(--primary)' : '1px solid rgba(255, 255, 255, 0.05)',
                             borderRadius: '12px',
                             display: 'flex',
                             alignItems: 'center',
-                            padding: '0 16px',
+                            padding: '0 14px',
                             gap: '12px',
                             transition: 'all 0.2s',
                             cursor: 'pointer'
@@ -1531,7 +2096,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
 
                 .canvas-sidebar.collapsed .sidebar-toggle {
                     right: -12px !important;
-                    top: 24px !important;
+                    top: 18px !important;
                     position: absolute;
                     transform: none;
                 }

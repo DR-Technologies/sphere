@@ -1,13 +1,26 @@
 import { createClient } from '@supabase/supabase-js';
+import { appLogger } from './logger';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
 if (!supabaseUrl || !supabaseAnonKey) {
     if (typeof window === 'undefined') {
-        console.error('CRITICAL: Supabase environment variables are missing on the SERVER.');
+        appLogger.error('config', 'SUPABASE_SERVER_ENV_MISSING', 'Supabase environment variables are missing on the server.', {
+            once: true,
+            meta: {
+                hasUrl: Boolean(supabaseUrl),
+                hasAnonKey: Boolean(supabaseAnonKey)
+            }
+        });
     } else {
-        console.warn('Supabase credentials missing. Data persistence will not work.');
+        appLogger.warn('config', 'SUPABASE_CLIENT_ENV_MISSING', 'Supabase credentials are missing in the browser. Data persistence will not work.', {
+            once: true,
+            meta: {
+                hasUrl: Boolean(supabaseUrl),
+                hasAnonKey: Boolean(supabaseAnonKey)
+            }
+        });
     }
 }
 
@@ -24,5 +37,3 @@ export const supabase = createClient(
         }
     }
 );
-// Optional: enable debug if needed (user can see it in console)
-// (supabase as any).debug = true;

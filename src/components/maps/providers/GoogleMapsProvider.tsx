@@ -3,6 +3,7 @@
 import React from 'react';
 import { loadGoogleMaps } from './googleMapsLoader';
 import type { MapVisualizationProps } from '../types';
+import { appLogger, getErrorMessage } from '@/lib/logger';
 
 export default function GoogleMapsProvider({ points }: MapVisualizationProps) {
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -85,7 +86,8 @@ export default function GoogleMapsProvider({ points }: MapVisualizationProps) {
         }
       } catch (err: any) {
         if (!cancelled) {
-          setError(err?.message || 'Failed to load map provider.');
+          appLogger.error('maps', 'GOOGLE_MAP_RENDER_FAILED', 'Failed to load Google Maps provider.', { error: err });
+          setError(getErrorMessage(err, 'No se pudo cargar el mapa.'));
         }
       }
     };

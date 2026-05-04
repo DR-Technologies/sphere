@@ -4,7 +4,7 @@ import React from 'react';
 import {
     BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
-    AreaChart, Area, Treemap
+    AreaChart, Area, Treemap, LabelList
 } from 'recharts';
 import { formatDate } from '@/lib/dateUtils';
 import MapVisualization from '@/components/maps/MapVisualization';
@@ -25,6 +25,13 @@ interface ChartRendererProps {
     colorByCategory?: boolean;
     colors?: string[];
     customColor?: string;
+    showLegend?: boolean;
+    showTooltip?: boolean;
+    showDataLabels?: boolean;
+    numberFormat?: 'standard' | 'compact';
+    dateDisplayFormat?: 'default' | 'short';
+    showCardLabel?: boolean;
+    cardValueSize?: 'small' | 'medium' | 'large';
 }
 
 const DEFAULT_COLORS = ['#8b5cf6', '#22d3ee', '#f43f5e', '#10b981', '#f59e0b', '#6366f1', '#ec4899'];
@@ -54,7 +61,14 @@ export default function ChartRenderer({
     colorScheme = 'varied',
     colorByCategory = true,
     colors = DEFAULT_COLORS,
-    customColor
+    customColor,
+    showLegend = true,
+    showTooltip = true,
+    showDataLabels = false,
+    numberFormat = 'standard',
+    dateDisplayFormat = 'default',
+    showCardLabel = true,
+    cardValueSize = 'medium'
 }: ChartRendererProps) {
     const [isMounted, setIsMounted] = React.useState(false);
 
@@ -62,13 +76,13 @@ export default function ChartRenderer({
         setIsMounted(true);
     }, []);
 
-    const getColors = () => {
+    const getColors = React.useCallback(() => {
         if (colorScheme === 'solid') return [customColor || colors[0]];
         if (colorScheme === 'blues') return BLUE_COLORS;
         return colors;
-    };
+    }, [colorScheme, customColor, colors]);
 
-    const activeColors = getColors();
+    const activeColors = React.useMemo(() => getColors(), [getColors]);
 
     const getBaseFieldName = (fieldName?: string) => {
         if (!fieldName) return '';
@@ -112,19 +126,32 @@ export default function ChartRenderer({
         return null;
     };
 
-    const formatDisplayValue = (value: unknown, fieldName?: string) => {
+    const formatDisplayValue = React.useCallback((value: unknown, fieldName?: string) => {
         const normalizedDate = normalizeDateValue(value, fieldName);
-        if (normalizedDate) return formatDate(normalizedDate);
-        if (typeof value === 'number') return value.toLocaleString();
+        if (normalizedDate) {
+            if (dateDisplayFormat === 'short') {
+                return normalizedDate.toLocaleDateString('es-CO');
+            }
+            return formatDate(normalizedDate);
+        }
+        if (typeof value === 'number') {
+            if (numberFormat === 'compact') {
+                return new Intl.NumberFormat('es-CO', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+            }
+            return value.toLocaleString();
+        }
         return String(value ?? '');
-    };
+    }, [dateDisplayFormat, numberFormat]);
 
-    const formatMetricValue = (value: unknown) => {
+    const formatMetricValue = React.useCallback((value: unknown) => {
         if (typeof value === 'number' && Number.isFinite(value)) {
+            if (numberFormat === 'compact') {
+                return new Intl.NumberFormat('es-CO', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+            }
             return new Intl.NumberFormat('es-CO', { maximumFractionDigits: 2 }).format(value);
         }
         return formatDisplayValue(value);
-    };
+    }, [formatDisplayValue, numberFormat]);
 
     const renderTreemapNode = (props: TreemapNodeProps) => {
         const { x = 0, y = 0, width = 0, height = 0, name = '', fill = '#8884d8' } = props;
@@ -144,34 +171,30 @@ export default function ChartRenderer({
         return (
             <g>
                 <rect x={x} y={y} width={width} height={height} fill={fill} stroke="rgba(255,255,255,0.72)" strokeWidth={1} />
-                <text
-                    x={labelX}
-                    y={labelY}
-                    fill="rgba(255,255,255,0.96)"
-                    fontFamily='-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif'
-                    fontSize={fontSize}
-                    fontWeight={600}
-                    textRendering="geometricPrecision"
-                    style={{
-                        pointerEvents: 'none',
-                        paintOrder: 'fill',
-                        stroke: 'none',
-                        letterSpacing: '-0.02em'
-                    }}
-                >
-                    {formatDisplayValue(name, xAxis)}
-                </text>
+                {showDataLabels && (
+                    <text
+                        x={labelX}
+                        y={labelY}
+                        fill="rgba(255,255,255,0.96)"
+                        fontFamily='-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif'
+                        fontSize={fontSize}
+                        fontWeight={600}
+                        textRendering="geometricPrecision"
+                        style={{
+                            pointerEvents: 'none',
+                            paintOrder: 'fill',
+                            stroke: 'none',
+                            letterSpacing: '-0.02em'
+                        }}
+                    >
+                        {formatDisplayValue(name, xAxis)}
+                    </text>
+                )}
             </g>
         );
     };
 
-    if (!isMounted) return <div style={{ height: '100%', width: '100%' }} />;
-
-    if (!data || data.length === 0) {
-        return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>No data available</div>;
-    }
-
-    const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: Record<string, any>[]; label?: string }) => {
+    const renderTooltipContent = React.useCallback(({ active, payload, label }: { active?: boolean; payload?: readonly Record<string, any>[]; label?: string | number }) => {
         if (active && payload && payload.length) {
             const data = payload[0].payload;
             return (
@@ -186,7 +209,45 @@ export default function ChartRenderer({
             );
         }
         return null;
-    };
+    }, [formatDisplayValue, xAxis, yAxis]);
+
+    const commonProps = React.useMemo(() => ({
+        data,
+        margin: { top: 10, right: 30, left: 0, bottom: 20 },
+        style: { fontFamily: CHART_FONT_FAMILY }
+    }), [data]);
+
+    const axisProps = React.useMemo(() => ({
+        stroke: 'var(--text-muted)',
+        fontSize: 11,
+        tickLine: false,
+        axisLine: false,
+        tick: { fontFamily: CHART_FONT_FAMILY, fontSize: 11, fill: 'var(--text-muted)' }
+    }), []);
+
+    const legendProps = React.useMemo(() => ({
+        iconType: 'circle' as const,
+        wrapperStyle: { fontFamily: CHART_FONT_FAMILY, fontSize: '11px' }
+    }), []);
+
+    const mapPoints = React.useMemo(() => {
+        return data
+            .map((row) => ({
+                id: `${String(row[xAxis])}-${String(row[latitudeField || ''])}-${String(row[longitudeField || ''])}`,
+                label: String(row[xAxis] ?? ''),
+                value: Number(row[yAxis]),
+                lat: Number(row[latitudeField || '']),
+                lon: Number(row[longitudeField || '']),
+                color: activeColors[Math.abs(String(row[xAxis] ?? '').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % activeColors.length]
+            }))
+            .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lon) && point.lat >= -90 && point.lat <= 90 && point.lon >= -180 && point.lon <= 180);
+    }, [activeColors, data, latitudeField, longitudeField, xAxis, yAxis]);
+
+    if (!isMounted) return <div style={{ height: '100%', width: '100%' }} />;
+
+    if (!data || data.length === 0) {
+        return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>No data available</div>;
+    }
 
     if (type === 'table') {
         const columns = Object.keys(data[0]);
@@ -219,13 +280,20 @@ export default function ChartRenderer({
     if (type === 'card') {
         const primaryRow = data[0] || {};
         const value = primaryRow[yAxis];
+        const valueFontSize = cardValueSize === 'small'
+            ? 'clamp(1.75rem, 4vw, 3rem)'
+            : cardValueSize === 'large'
+                ? 'clamp(2.5rem, 6vw, 4.75rem)'
+                : 'clamp(2rem, 5vw, 4rem)';
         return (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{ textAlign: 'center', width: '100%' }}>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                        {widgetTitle || yAxis}
-                    </p>
-                    <div style={{ fontSize: 'clamp(2rem, 5vw, 4rem)', fontWeight: 700, letterSpacing: '-0.05em', color: 'var(--foreground)', lineHeight: 1 }}>
+                    {showCardLabel && (
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                            {yAxis}
+                        </p>
+                    )}
+                    <div style={{ fontSize: valueFontSize, fontWeight: 700, letterSpacing: '-0.05em', color: 'var(--foreground)', lineHeight: 1 }}>
                         {formatMetricValue(value)}
                     </div>
                 </div>
@@ -234,47 +302,22 @@ export default function ChartRenderer({
     }
 
     if (type === 'map') {
-        const points = data
-            .map((row) => ({
-                id: `${String(row[xAxis])}-${String(row[latitudeField || ''])}-${String(row[longitudeField || ''])}`,
-                label: String(row[xAxis] ?? ''),
-                value: Number(row[yAxis]),
-                lat: Number(row[latitudeField || '']),
-                lon: Number(row[longitudeField || '']),
-                color: activeColors[Math.abs(String(row[xAxis] ?? '').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % activeColors.length]
-            }))
-            .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lon) && point.lat >= -90 && point.lat <= 90 && point.lon >= -180 && point.lon <= 180);
+        if (mapPoints.length === 0) {
+            return (
+                <div style={{ width: '100%', height: '100%', position: 'relative', borderRadius: '18px', overflow: 'hidden', background: 'linear-gradient(180deg, rgba(120, 169, 255, 0.18), rgba(12, 20, 34, 0.1))' }}>
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '24px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                        Selecciona campos válidos de latitud y longitud para mostrar el mapa.
+                    </div>
+                </div>
+            );
+        }
 
         return (
             <div style={{ width: '100%', height: '100%', position: 'relative', borderRadius: '18px', overflow: 'hidden', background: 'linear-gradient(180deg, rgba(120, 169, 255, 0.18), rgba(12, 20, 34, 0.1))' }}>
-                <MapVisualization points={points} />
-                {points.length === 0 && (
-                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                        No valid coordinates to display
-                    </div>
-                )}
+                <MapVisualization points={mapPoints} />
             </div>
         );
     }
-
-    const commonProps = {
-        data,
-        margin: { top: 10, right: 30, left: 0, bottom: 20 },
-        style: { fontFamily: CHART_FONT_FAMILY }
-    };
-
-    const axisProps = {
-        stroke: 'var(--text-muted)',
-        fontSize: 11,
-        tickLine: false,
-        axisLine: false,
-        tick: { fontFamily: CHART_FONT_FAMILY, fontSize: 11, fill: 'var(--text-muted)' }
-    };
-
-    const legendProps = {
-        iconType: 'circle' as const,
-        wrapperStyle: { fontFamily: CHART_FONT_FAMILY, fontSize: '11px' }
-    };
 
     const getChart = () => {
         switch (type) {
@@ -293,7 +336,7 @@ export default function ChartRenderer({
                             animationDuration={1000}
                             content={renderTreemapNode}
                         />
-                        <Tooltip content={<CustomTooltip />} isAnimationActive={false} />
+                        {showTooltip && <Tooltip content={renderTooltipContent} isAnimationActive={false} />}
                     </>
                 );
 
@@ -313,8 +356,8 @@ export default function ChartRenderer({
                                 <YAxis {...axisProps} tickFormatter={(value: unknown) => formatDisplayValue(value, yAxis)} />
                             </>
                         )}
-                        <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.02)' }} isAnimationActive={false} />
-                        <Legend {...legendProps} />
+                        {showTooltip && <Tooltip content={renderTooltipContent} cursor={{ fill: 'rgba(255,255,255,0.02)' }} isAnimationActive={false} />}
+                        {showLegend && <Legend {...legendProps} />}
                         <Bar 
                             dataKey={yAxis} 
                             radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]} 
@@ -322,6 +365,14 @@ export default function ChartRenderer({
                             fill={activeColors[0] || '#8b5cf6'}
                             name={formatDisplayValue(yAxis)}
                         >
+                            {showDataLabels && (
+                                <LabelList
+                                    dataKey={yAxis}
+                                    position={isHorizontal ? 'right' : 'top'}
+                                    formatter={(value: unknown) => formatMetricValue(value)}
+                                    style={{ fill: 'var(--text-muted)', fontSize: 11, fontFamily: CHART_FONT_FAMILY }}
+                                />
+                            )}
                             {(colorScheme === 'varied' || colorScheme === 'blues') ? (
                                 data.map((_, index) => (
                                     <Cell 
@@ -346,9 +397,18 @@ export default function ChartRenderer({
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                         <XAxis dataKey={xAxis} {...axisProps} />
                         <YAxis {...axisProps} />
-                        <Tooltip content={<CustomTooltip />} isAnimationActive={false} />
-                        <Legend {...legendProps} />
-                        <Line type="monotone" dataKey={yAxis} stroke={activeColors[0]} strokeWidth={3} dot={{ r: 4, fill: activeColors[0], strokeWidth: 2, stroke: 'var(--background)' }} activeDot={{ r: 6, strokeWidth: 0 }} animationDuration={1000} name={formatDisplayValue(yAxis)} />
+                        {showTooltip && <Tooltip content={renderTooltipContent} isAnimationActive={false} />}
+                        {showLegend && <Legend {...legendProps} />}
+                        <Line type="monotone" dataKey={yAxis} stroke={activeColors[0]} strokeWidth={3} dot={{ r: 4, fill: activeColors[0], strokeWidth: 2, stroke: 'var(--background)' }} activeDot={{ r: 6, strokeWidth: 0 }} animationDuration={1000} name={formatDisplayValue(yAxis)}>
+                            {showDataLabels && (
+                                <LabelList
+                                    dataKey={yAxis}
+                                    position="top"
+                                    formatter={(value: unknown) => formatMetricValue(value)}
+                                    style={{ fill: 'var(--text-muted)', fontSize: 11, fontFamily: CHART_FONT_FAMILY }}
+                                />
+                            )}
+                        </Line>
                     </LineChart>
                 );
 
@@ -364,22 +424,43 @@ export default function ChartRenderer({
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                         <XAxis dataKey={xAxis} {...axisProps} />
                         <YAxis {...axisProps} />
-                        <Tooltip content={<CustomTooltip />} isAnimationActive={false} />
-                        <Legend {...legendProps} />
-                        <Area type="monotone" dataKey={yAxis} stroke={activeColors[0]} fillOpacity={1} fill="url(#colorValue)" strokeWidth={3} animationDuration={1000} name={formatDisplayValue(yAxis)} />
+                        {showTooltip && <Tooltip content={renderTooltipContent} isAnimationActive={false} />}
+                        {showLegend && <Legend {...legendProps} />}
+                        <Area type="monotone" dataKey={yAxis} stroke={activeColors[0]} fillOpacity={1} fill="url(#colorValue)" strokeWidth={3} animationDuration={1000} name={formatDisplayValue(yAxis)}>
+                            {showDataLabels && (
+                                <LabelList
+                                    dataKey={yAxis}
+                                    position="top"
+                                    formatter={(value: unknown) => formatMetricValue(value)}
+                                    style={{ fill: 'var(--text-muted)', fontSize: 11, fontFamily: CHART_FONT_FAMILY }}
+                                />
+                            )}
+                        </Area>
                     </AreaChart>
                 );
 
             case 'pie':
                 return (
                     <PieChart style={{ fontFamily: CHART_FONT_FAMILY }}>
-                        <Pie data={data} dataKey={yAxis} nameKey={xAxis} cx="50%" cy="50%" innerRadius="40%" outerRadius="70%" paddingAngle={5} labelLine={false} animationDuration={1000}>
+                        <Pie
+                            data={data}
+                            dataKey={yAxis}
+                            nameKey={xAxis}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius="40%"
+                            outerRadius="70%"
+                            paddingAngle={5}
+                            labelLine={false}
+                            animationDuration={1000}
+                            label={showDataLabels ? ({ value }: { value?: number }) => formatMetricValue(value ?? 0) : false}
+                        >
                             {data.map((_, index) => (
                                 <Cell key={`cell-${index}`} fill={activeColors[index % activeColors.length]} stroke="transparent" />
                             ))}
                         </Pie>
-                        <Tooltip content={<CustomTooltip />} isAnimationActive={false} />
-                        <Legend {...legendProps} layout="horizontal" align="center" verticalAlign="bottom" wrapperStyle={{ ...legendProps.wrapperStyle, paddingTop: '20px', fontSize: '10px' }} />
+                        {showTooltip && <Tooltip content={renderTooltipContent} isAnimationActive={false} />}
+                        {showLegend && <Legend {...legendProps} layout="horizontal" align="center" verticalAlign="bottom" wrapperStyle={{ ...legendProps.wrapperStyle, paddingTop: '20px', fontSize: '10px' }} />}
                     </PieChart>
                 );
 

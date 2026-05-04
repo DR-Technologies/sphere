@@ -10,6 +10,7 @@ import {
 } from '@/lib/persistence';
 import { profileFile, profileFromUrl, getExcelSheetNames } from '@/lib/profiler';
 import type { DatasetImportOptions, DateInputFormat, JsonOrient } from '@/lib/analytics/types';
+import { appLogger, getErrorMessage } from '@/lib/logger';
 import { User } from '@supabase/supabase-js';
 import DashboardLayout from './layout/DashboardLayout';
 import FileDropzone from '@/components/upload/FileDropzone';
@@ -109,7 +110,9 @@ function DashboardContent() {
         let isInitialFetch = true;
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-            console.log('Auth event:', event, !!session);
+            appLogger.debug('auth', 'AUTH_EVENT', 'Supabase auth state change received.', {
+                meta: { event, hasSession: Boolean(session) }
+            });
             const currentUser = session?.user ?? null;
 
             // Set user state
@@ -218,7 +221,7 @@ function DashboardContent() {
                 setAvailableSheets(sheets);
                 setSelectedSheet(sheets[0] || '');
             } catch (err) {
-                console.error('Error reading Excel sheets:', err);
+                appLogger.error('ingestion', 'READ_EXCEL_SHEETS_FAILED', 'Failed to read Excel sheet names.', { error: err });
                 setAvailableSheets([]);
                 setSelectedSheet('');
             }
@@ -268,7 +271,7 @@ function DashboardContent() {
                 }
             }
         } catch (err) {
-            console.error('Error profiling file:', err);
+            appLogger.error('ingestion', 'PROFILE_FILE_FAILED', 'Failed to profile dataset file.', { error: err, meta: { fileName: file.name } });
             alert('Failed to process file.');
             setStep('main');
         } finally {
@@ -289,7 +292,7 @@ function DashboardContent() {
             const syncedDataset = await ensureDatasetAnalyticsTable(saved, profile);
             setDataset({ id: syncedDataset.id, name: syncedDataset.name, ...profile });
         } catch (err) {
-            console.error('Error loading saved dataset:', err);
+            appLogger.error('ingestion', 'LOAD_SAVED_DATASET_FAILED', 'Failed to load saved dataset.', { error: err, meta: { datasetId: saved.id } });
             alert('Failed to load saved dataset.');
             setStep('main');
         } finally {
@@ -320,7 +323,7 @@ function DashboardContent() {
             setInitialReportId(report.id);
             setStep('canvas');
         } catch (err) {
-            console.error('Error loading report:', err);
+            appLogger.error('analytics', 'LOAD_SAVED_REPORT_FAILED', 'Failed to load saved report.', { error: err, meta: { reportId: report.id } });
             alert('Fallo al cargar el reporte.');
             setStep('main');
         } finally {
@@ -329,7 +332,9 @@ function DashboardContent() {
     };
 
     const handleDeleteDataset = async (ds: SavedDataset) => {
-        console.log('handleDeleteDataset triggered for:', ds.id);
+        appLogger.debug('ingestion', 'DELETE_DATASET_REQUESTED', 'Dataset deletion requested from dashboard.', {
+            meta: { datasetId: ds.id }
+        });
         const reportsUsingDs = savedReports.filter(r => r.dataset_id === ds.id);
         if (reportsUsingDs.length > 0) {
             const names = reportsUsingDs.map(r => `"${r.name}"`).join(', ');
@@ -340,10 +345,14 @@ function DashboardContent() {
         if (window.confirm('¿Estás seguro de que deseas eliminar este dataset y todos sus datos?')) {
             try {
                 setIsProfiling(true);
-                console.log('Confirmation received, deleting from Supabase:', ds.id);
+                appLogger.debug('ingestion', 'DELETE_DATASET_CONFIRMED', 'Deleting dataset from Supabase.', {
+                    meta: { datasetId: ds.id }
+                });
                 if (user) await deleteDataset(ds.id, ds.file_url, user.id);
 
-                console.log('Deletion successful, updating local state and refetching...');
+                appLogger.debug('ingestion', 'DELETE_DATASET_SUCCEEDED', 'Dataset deletion succeeded, refreshing local state.', {
+                    meta: { datasetId: ds.id }
+                });
                 // 1. Update local state immediately for fast UI feedback
                 setSavedDatasets(prev => prev.filter(d => d.id !== ds.id));
 
@@ -361,8 +370,8 @@ function DashboardContent() {
 
                 alert('Dataset eliminado correctamente.');
             } catch (err: any) {
-                console.error('Error in handleDeleteDataset:', err);
-                alert(`Error al eliminar el dataset: ${err.message || 'Error desconocido'}`);
+                appLogger.error('ingestion', 'DELETE_DATASET_FAILED', 'Failed to delete dataset from dashboard.', { error: err, meta: { datasetId: ds.id } });
+                alert(`Error al eliminar el dataset: ${getErrorMessage(err, 'Error desconocido')}`);
             } finally {
                 setIsProfiling(false);
             }

@@ -77,7 +77,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
 
             <style jsx>{`
                 .sidebar {
-                    width: 260px;
+                    width: 220px;
                     height: 100vh;
                     background: linear-gradient(180deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.06));
                     backdrop-filter: blur(30px) saturate(170%);
@@ -98,23 +98,22 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
                 }
 
                 .sidebar-header {
-                    padding: 32px 24px;
+                    padding: 24px 18px 22px;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
                     position: relative;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
                 }
 
                 .sidebar.collapsed .sidebar-header {
-                    padding: 32px 0;
+                    padding: 24px 0;
                     justify-content: center;
                 }
 
                 .logo-container {
                     display: flex;
                     align-items: center;
-                    gap: 12px;
+                    gap: 10px;
                 }
 
                 .logo-orb {
@@ -138,7 +137,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
                 }
 
                 .logo-text {
-                    font-size: 1.5rem;
+                    font-size: 1.35rem;
                     font-weight: 700;
                     letter-spacing: -0.04em;
                     background: linear-gradient(to right, #ffffff, #d8e6ff);
@@ -160,13 +159,13 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
                     transition: all 0.2s;
                     position: absolute;
                     right: -12px;
-                    top: 40px;
+                    top: 30px;
                     z-index: 10;
                 }
 
                 .sidebar.collapsed .collapse-toggle {
                     right: auto;
-                    top: 24px;
+                    top: 18px;
                     position: absolute;
                     transform: translateX(35px);
                 }
@@ -180,23 +179,23 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
 
                 .sidebar-nav {
                     flex: 1;
-                    padding: 18px 16px;
+                    padding: 14px 12px;
                     display: flex;
                     flex-direction: column;
-                    gap: 8px;
+                    gap: 6px;
                 }
 
                 .nav-item {
                     display: flex;
                     align-items: center;
-                    gap: 12px;
-                    padding: 12px 16px;
+                    gap: 10px;
+                    padding: 11px 14px;
                     background: rgba(255, 255, 255, 0.03);
                     border: none;
-                    border-radius: 18px;
-                    color: rgba(233, 242, 255, 0.76);
-                    font-size: 0.9375rem;
-                    font-weight: 600;
+                    border-radius: 16px;
+                    color: rgba(233, 242, 255, 0.74);
+                    font-size: 0.9rem;
+                    font-weight: 500;
                     cursor: pointer;
                     transition: all 0.28s ease;
                     text-align: left;
@@ -208,7 +207,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
 
                 .sidebar.collapsed .nav-item {
                     justify-content: center;
-                    padding: 12px;
+                    padding: 11px;
                 }
 
                 .nav-item:hover {
@@ -226,18 +225,17 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
                 }
 
                 .sidebar-footer {
-                    padding: 24px 16px;
-                    border-top: 1px solid rgba(255, 255, 255, 0.08);
+                    padding: 18px 12px;
                     display: flex;
                     flex-direction: column;
-                    gap: 16px;
+                    gap: 12px;
                 }
 
                 .user-info {
                     display: flex;
                     align-items: center;
-                    gap: 12px;
-                    padding: 0 8px;
+                    gap: 10px;
+                    padding: 0 6px;
                 }
 
                 .sidebar.collapsed .user-info {
@@ -246,8 +244,8 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
                 }
 
                 .user-avatar {
-                    width: 36px;
-                    height: 36px;
+                    width: 34px;
+                    height: 34px;
                     background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08));
                     border: 1px solid rgba(255, 255, 255, 0.16);
                     border-radius: 50%;
@@ -266,7 +264,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName }
                 }
 
                 .user-name {
-                    font-size: 0.875rem;
+                    font-size: 0.84rem;
                     font-weight: 500;
                     color: var(--foreground);
                     white-space: nowrap;

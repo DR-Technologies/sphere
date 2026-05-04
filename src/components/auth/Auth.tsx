@@ -1,6 +1,7 @@
 'use client';
 
 import { supabase } from '@/lib/supabase';
+import { appLogger } from '@/lib/logger';
 import { motion } from 'framer-motion';
 import { LogIn } from 'lucide-react';
 
@@ -12,7 +13,9 @@ export default function Auth() {
                 redirectTo: `${window.location.origin}/auth/callback`
             }
         });
-        if (error) console.error('Error logging in:', error.message);
+        if (error) {
+            appLogger.error('auth', 'GOOGLE_LOGIN_FAILED', 'Failed to start Google OAuth flow.', { error });
+        }
     };
 
     return (

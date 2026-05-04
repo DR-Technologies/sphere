@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { getReportById, getDatasetById, SavedReport } from '@/lib/persistence';
 import { profileFromUrl, runQuery } from '@/lib/profiler';
+import { appLogger, getErrorMessage } from '@/lib/logger';
 import ChartRenderer, { ChartType } from '@/components/visuals/ChartRenderer';
 import { Loader2, BarChart3, Globe } from 'lucide-react';
 import { ResponsiveGridLayout } from 'react-grid-layout';
@@ -22,23 +23,126 @@ interface Widget {
     h: number;
     orderBy?: 'ASC' | 'DESC';
     topN?: number;
+    orientation?: 'vertical' | 'horizontal';
     colorScheme?: 'varied' | 'blues' | 'solid';
     colorByCategory?: boolean;
     customColor?: string;
+    showLegend?: boolean;
+    showTooltip?: boolean;
+    showDataLabels?: boolean;
+    numberFormat?: 'standard' | 'compact';
+    dateDisplayFormat?: 'default' | 'short';
     columnAggregations?: Record<string, string>;
     latitudeField?: string;
     longitudeField?: string;
+    showWidgetTitle?: boolean;
+    showWidgetSubtitle?: boolean;
+    showCardLabel?: boolean;
+    cardValueSize?: 'small' | 'medium' | 'large';
+}
+
+const NUMERIC_COLUMN_TYPES = new Set(['INTEGER', 'BIGINT', 'DOUBLE', 'DECIMAL', 'NUMERIC', 'REAL', 'SMALLINT']);
+const WIDGET_DISPLAY_DEFAULTS = {
+    showLegend: true,
+    showTooltip: true,
+    showDataLabels: false,
+    numberFormat: 'standard' as const,
+    dateDisplayFormat: 'default' as const
+};
+
+function getColumnType(columnsMeta: { name: string; type: string }[], columnName?: string) {
+    if (!columnName) return null;
+    return columnsMeta.find((column) => column.name === columnName)?.type?.toUpperCase() || null;
+}
+
+function isExistingColumn(columnsMeta: { name: string; type: string }[], columnName?: string) {
+    return Boolean(columnName && columnsMeta.some((column) => column.name === columnName));
+}
+
+function buildAggregationExpression(
+    columnsMeta: { name: string; type: string }[],
+    columnName: string,
+    aggregation: string
+) {
+    if (aggregation === 'COUNT') {
+        return `COUNT("${columnName}")`;
+    }
+
+    if (aggregation === 'DISTINCT') {
+        return `COUNT(DISTINCT "${columnName}")`;
+    }
+
+    if (aggregation === 'SUM' || aggregation === 'AVG') {
+        const columnType = getColumnType(columnsMeta, columnName);
+        if (!columnType || !NUMERIC_COLUMN_TYPES.has(columnType)) {
+            throw new Error(`Aggregation ${aggregation} requires a numeric column.`);
+        }
+
+        return `${aggregation}("${columnName}"::double precision)`;
+    }
+
+    return `${aggregation}("${columnName}")`;
+}
+
+function getWidgetConfigIssue(widget: Widget, columnsMeta: { name: string; type: string }[]) {
+    const columnExists = (columnName?: string) => isExistingColumn(columnsMeta, columnName);
+    const isNumericAggregation = widget.aggregation === 'SUM' || widget.aggregation === 'AVG';
+    const yAxisType = getColumnType(columnsMeta, widget.yAxis);
+
+    if (widget.type === 'table') {
+        const validColumns = (widget.columns || []).filter((columnName) => columnExists(columnName));
+        return validColumns.length === 0 ? 'No hay columnas válidas para mostrar esta tabla.' : null;
+    }
+
+    if (widget.type === 'card') {
+        if (!columnExists(widget.yAxis)) return 'No hay un campo de valor válido para esta tarjeta.';
+        if (isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+            return 'La agregación seleccionada requiere una columna numérica.';
+        }
+        return null;
+    }
+
+    if (widget.type === 'map') {
+        if (!columnExists(widget.latitudeField) || !columnExists(widget.longitudeField)) {
+            return 'Selecciona campos válidos de latitud y longitud para mostrar el mapa.';
+        }
+        if (!columnExists(widget.yAxis)) {
+            return 'No hay un campo de valor válido para este mapa.';
+        }
+        if (widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+            return 'La agregación seleccionada requiere una columna numérica.';
+        }
+        return null;
+    }
+
+    if (!columnExists(widget.xAxis) || !columnExists(widget.yAxis)) {
+        return 'La configuración de esta visualización ya no es válida para el dataset actual.';
+    }
+
+    if (widget.type !== 'treemap' && widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+        return 'La agregación seleccionada requiere una columna numérica.';
+    }
+
+    return null;
 }
 
 function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widget: Widget, isInitialized: boolean, columnsMeta: { name: string; type: string }[], datasetId: string }) {
     const [data, setData] = useState<Record<string, any>[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const configIssue = React.useMemo(() => getWidgetConfigIssue(widget, columnsMeta), [widget, columnsMeta]);
 
     useEffect(() => {
         if (!isInitialized) return;
 
         const fetchData = async () => {
+            if (configIssue) {
+                setLoading(false);
+                setData([]);
+                setError(configIssue);
+                return;
+            }
+
             setLoading(true);
             setError(null);
             try {
@@ -53,9 +157,7 @@ function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widge
                             const agg = colAggs[c] || 'NONE';
                             if (agg === 'NONE') return `"${c}"`;
                             const abbrev = abbrevs[agg] || agg;
-                            if (agg === 'DISTINCT') return `COUNT(DISTINCT "${c}") as "${c} (${abbrev})"`;
-                            if (['SUM', 'AVG'].includes(agg)) return `${agg}(TRY_CAST("${c}" AS DOUBLE)) as "${c} (${abbrev})"`;
-                            return `${agg}("${c}") as "${c} (${abbrev})"`;
+                            return `${buildAggregationExpression(columnsMeta, c, agg)} as "${c} (${abbrev})"`;
                         }).join(', ');
                         
                         const dimensions = widget.columns.filter(c => (colAggs[c] || 'NONE') === 'NONE');
@@ -66,16 +168,12 @@ function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widge
                         query = `SELECT ${cols} FROM dataset LIMIT 100`;
                     }
                 } else if (widget.type === 'card') {
-                    const aggExpr = widget.aggregation === 'COUNT'
-                        ? `COUNT("${widget.yAxis}")`
-                        : `${widget.aggregation}(TRY_CAST("${widget.yAxis}" AS DOUBLE))`;
+                    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
                     query = `SELECT ${aggExpr} as "${widget.yAxis}" FROM dataset`;
                 } else if (widget.type === 'map' && widget.latitudeField && widget.longitudeField) {
                     const metricExpr = widget.aggregation === 'NONE'
-                        ? `TRY_CAST("${widget.yAxis}" AS DOUBLE)`
-                        : widget.aggregation === 'COUNT'
-                            ? `COUNT("${widget.yAxis}")`
-                            : `${widget.aggregation}(TRY_CAST("${widget.yAxis}" AS DOUBLE))`;
+                        ? `"${widget.yAxis}"::double precision`
+                        : buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
                     const dimensionSelect = widget.xAxis ? `"${widget.xAxis}",` : '';
                     const groupByClause = widget.aggregation === 'NONE'
                         ? ''
@@ -96,9 +194,7 @@ function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widge
                     const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 100';
                     query = `SELECT "${widget.xAxis}", "${widget.yAxis}" FROM dataset ${orderClause} ${limitClause}`;
                 } else {
-                    const aggExpr = widget.aggregation === 'COUNT'
-                        ? `COUNT("${widget.yAxis}")`
-                        : `${widget.aggregation}(TRY_CAST("${widget.yAxis}" AS DOUBLE))`;
+                    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
 
                     const orderCol = widget.orderBy === 'ASC' || widget.orderBy === 'DESC' ? `"${widget.yAxis}"` : `"${widget.xAxis}"`;
                     const orderDir = widget.orderBy || 'DESC';
@@ -118,24 +214,42 @@ function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widge
                 const result = await runQuery(query, { datasetId });
                 setData(result);
             } catch (err: unknown) {
-                console.error('Error fetching widget data:', err);
-                setError('Error al cargar datos');
+                appLogger.error('analytics', 'PUBLIC_WIDGET_QUERY_FAILED', 'Failed to fetch public widget data.', {
+                    error: err,
+                    meta: {
+                        widgetId: widget.id,
+                        widgetType: widget.type,
+                        aggregation: widget.aggregation
+                    }
+                });
+                const message = getErrorMessage(err, '');
+                if (message.includes('requires a numeric column')) {
+                    setError('La agregación seleccionada requiere una columna numérica.');
+                } else {
+                    setError('Error al cargar datos');
+                }
             } finally {
                 setLoading(false);
             }
         };
 
         fetchData();
-    }, [widget, isInitialized, datasetId]);
+    }, [widget, isInitialized, datasetId, configIssue]);
 
     return (
         <div className="glass glass-card" style={{ padding: '24px', height: '100%', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }}>
-            <div style={{ marginBottom: '16px' }}>
-                <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>{widget.title}</h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {widget.type === 'table' ? 'Vista de tabla' : `${widget.xAxis} vs ${widget.yAxis}`}
-                </p>
-            </div>
+            {((widget.type !== 'card' || widget.showWidgetTitle !== false) || (widget.type !== 'card' || widget.showWidgetSubtitle !== false)) && (
+                <div style={{ marginBottom: '16px' }}>
+                    {(widget.type !== 'card' || widget.showWidgetTitle !== false) && (
+                        <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>{widget.title}</h3>
+                    )}
+                    {(widget.type !== 'card' || widget.showWidgetSubtitle !== false) && (
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            {widget.type === 'table' ? 'Vista de tabla' : `${widget.xAxis} vs ${widget.yAxis}`}
+                        </p>
+                    )}
+                </div>
+            )}
             <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%', minHeight: '250px' }}>
                 {loading ? (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
@@ -155,9 +269,17 @@ function PublicWidget({ widget, isInitialized, columnsMeta, datasetId }: { widge
                         widgetTitle={widget.title}
                         latitudeField={widget.latitudeField}
                         longitudeField={widget.longitudeField}
+                        orientation={widget.orientation}
                         colorScheme={widget.colorScheme}
                         colorByCategory={widget.colorByCategory}
                         customColor={widget.customColor}
+                        showLegend={widget.showLegend ?? WIDGET_DISPLAY_DEFAULTS.showLegend}
+                        showTooltip={widget.showTooltip ?? WIDGET_DISPLAY_DEFAULTS.showTooltip}
+                        showDataLabels={widget.showDataLabels ?? WIDGET_DISPLAY_DEFAULTS.showDataLabels}
+                        numberFormat={widget.numberFormat ?? WIDGET_DISPLAY_DEFAULTS.numberFormat}
+                        dateDisplayFormat={widget.dateDisplayFormat ?? WIDGET_DISPLAY_DEFAULTS.dateDisplayFormat}
+                        showCardLabel={widget.showCardLabel ?? true}
+                        cardValueSize={widget.cardValueSize ?? 'medium'}
                     />
                 )}
             </div>
@@ -201,7 +323,10 @@ export default function ReportPage() {
                 }
                 setLoading(false);
             } catch (error) {
-                console.error('Error loading public report:', error);
+                appLogger.error('analytics', 'LOAD_PUBLIC_REPORT_FAILED', 'Failed to load public report.', {
+                    error,
+                    meta: { reportId: id as string }
+                });
                 setError('Error cargando el reporte');
                 setLoading(false);
             }
