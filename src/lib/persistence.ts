@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { appLogger } from './logger';
+import type { ReportPresentation } from './widgets/types';
 
 export interface SavedDataset {
     id: string;
@@ -30,6 +31,7 @@ export interface SavedReport {
     dataset_id: string;
     widgets: any[];
     filters?: any[]; // Global filters for the report
+    presentation?: ReportPresentation;
     created_at: string;
 }
 
@@ -222,11 +224,32 @@ export async function getDatasets(userId: string): Promise<SavedDataset[]> {
  * Saves or updates a report
  */
 export async function saveReport(report: Omit<SavedReport, 'created_at'> | Omit<SavedReport, 'id' | 'created_at'>) {
+    const { presentation, ...reportWithoutPresentation } = report as SavedReport;
     const { data, error } = await supabase
         .from('reports')
         .upsert([report])
         .select()
         .single();
+
+    if (error && error.code === 'PGRST204') {
+        appLogger.warn('analytics', 'REPORT_OPTIONAL_COLUMNS_MISSING', 'Some optional report columns were not found. Falling back to save without them.', {
+            once: true,
+            error
+        });
+
+        const { data: retryData, error: retryError } = await supabase
+            .from('reports')
+            .upsert([reportWithoutPresentation])
+            .select()
+            .single();
+
+        if (retryError) {
+            appLogger.error('analytics', 'SAVE_REPORT_FAILED', 'Failed to save report after fallback retry.', { error: retryError });
+            throw retryError;
+        }
+
+        return retryData;
+    }
 
     if (error) {
         appLogger.error('analytics', 'SAVE_REPORT_FAILED', 'Failed to save report.', { error });

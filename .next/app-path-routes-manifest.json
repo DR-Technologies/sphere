@@ -2,7 +2,7 @@
   "/favicon.ico/route": "/favicon.ico",
   "/_global-error/page": "/_global-error",
   "/_not-found/page": "/_not-found",
-  "/page": "/",
   "/auth/callback/page": "/auth/callback",
+  "/page": "/",
   "/report/[id]/page": "/report/[id]"
 }

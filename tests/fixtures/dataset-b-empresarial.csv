@@ -1,0 +1,7 @@
+Order ID,Customer ID,Booking Date,Region,Department,Revenue %,Margin %,Revenue Amount,Cost Amount,Units
+ORD-1001,CUST-001,03/01/2026,North,Sales,12.5%,18.4%,"$12,500.00","$8,700.00",24
+ORD-1002,CUST-002,07/01/2026,South,Marketing,8.0%,14.2%,"$9,800.00","$6,400.00",19
+ORD-1003,CUST-003,10/01/2026,West,Sales,,16.8%,"$15,200.00","$10,100.00",31
+ORD-1004,CUST-004,14/01/2026,East,Finance,10.3%,,"$11,100.00","$7,950.00",22
+ORD-1005,CUST-005,18/01/2026,North,Operations,9.1%,11.5%,"$8,950.00",,17
+ORD-1006,CUST-006,22/01/2026,West,Marketing,13.7%,20.1%,"$16,750.00","$11,400.00",29

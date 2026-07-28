@@ -7,12 +7,14 @@ import {
 import { formatDate } from '@/lib/dateUtils';
 import { useTranslation } from '@/lib/i18n/LanguageContext';
 import ChartRenderer, { ChartType } from '../visuals/ChartRenderer';
-import { runQuery } from '@/lib/profiler';
 import { saveReport, getReports, deleteReport, checkReportLimit, SavedDataset, SavedReport } from '@/lib/persistence';
 import { appLogger, getErrorMessage } from '@/lib/logger';
 import { ResponsiveGridLayout, ResizeHandleAxis } from 'react-grid-layout';
 const ResponsiveGridLayoutComponent = ResponsiveGridLayout as any;
 import { supabase } from '@/lib/supabase';
+import type { ReportPresentation } from '@/lib/widgets/types';
+import { buildWidgetQueryModel } from '@/lib/analytics/queryModel';
+import { resolveWidgetVisualizationResult } from '@/lib/analytics/widgetResult';
 
 export type AggregationType = 'SUM' | 'AVG' | 'COUNT' | 'MIN' | 'MAX' | 'DISTINCT' | 'NONE';
 
@@ -70,6 +72,8 @@ interface ReportCanvasProps {
         preview: Record<string, any>[];
     };
     initialReportId?: string | null;
+    initialWidgets?: Widget[];
+    initialPresentation?: ReportPresentation;
     savedDatasets?: SavedDataset[];
     onReportDeleted?: () => void;
     onChangesStatusChange?: (hasChanges: boolean) => void;
@@ -396,92 +400,21 @@ const WidgetCard = React.memo(({
             setLoading(true);
             setError(null);
             try {
-                let query = '';
-                const filtersToApply = globalFilters.filter(f => f.column && f.value !== null && f.value !== '');
-                const whereClause = filtersToApply.length > 0
-                    ? `WHERE ${filtersToApply.map(f => `"${f.column}" = '${String(f.value).replace(/'/g, "''")}'`).join(' AND ')}`
-                    : '';
-
-                if (widget.type === 'card') {
-                    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
-                    query = `SELECT ${aggExpr} as "${widget.yAxis}" FROM dataset ${whereClause}`;
-                } else if (widget.type === 'map' && widget.latitudeField && widget.longitudeField) {
-                    const metricExpr = widget.aggregation === 'NONE'
-                        ? `"${widget.yAxis}"::double precision`
-                        : buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
-                    const dimensionSelect = widget.xAxis ? `"${widget.xAxis}",` : '';
-                    const groupByClause = widget.aggregation === 'NONE'
-                        ? ''
-                        : `GROUP BY ${widget.xAxis ? `"${widget.xAxis}",` : ''} "${widget.latitudeField}", "${widget.longitudeField}"`;
-                    query = `
-                        SELECT
-                            ${dimensionSelect}
-                            "${widget.latitudeField}",
-                            "${widget.longitudeField}",
-                            ${metricExpr} as "${widget.yAxis}"
-                        FROM dataset
-                        ${whereClause}
-                        ${groupByClause}
-                        LIMIT ${widget.topN || 500}
-                    `;
-                } else if (widget.type === 'table' && widget.columns && widget.columns.length > 0) {
-                    const colAggs = widget.columnAggregations || {};
-                    const hasMetrics = Object.entries(colAggs).some(([col, agg]) => widget.columns?.includes(col) && agg !== 'NONE');
-
-                    if (hasMetrics) {
-                        const abbrevs: Record<string, string> = { 'SUM': 'SUM', 'AVG': 'AVG', 'COUNT': 'CNT', 'DISTINCT': 'DST' };
-                        const selects = widget.columns.map(c => {
-                            const agg = colAggs[c] || 'NONE';
-                            if (agg === 'NONE') return `"${c}"`;
-                            const abbrev = abbrevs[agg] || agg;
-                            return `${buildAggregationExpression(columnsMeta, c, agg as AggregationType)} as "${c} (${abbrev})"`;
-                        }).join(', ');
-
-                        const dimensions = widget.columns.filter(c => (colAggs[c] || 'NONE') === 'NONE');
-                        const groupByClause = dimensions.length > 0 ? `GROUP BY ${dimensions.map(d => `"${d}"`).join(', ')}` : '';
-                        query = `SELECT ${selects} FROM dataset ${whereClause} ${groupByClause} LIMIT 50`;
-                    } else {
-                        const cols = widget.columns.map(c => `"${c}"`).join(', ');
-                        query = `SELECT ${cols} FROM dataset ${whereClause} LIMIT 100`;
-                    }
-                }
-                else if (widget.aggregation === 'NONE') {
-                    const orderClause = widget.orderBy ? `ORDER BY "${widget.xAxis}" ${widget.orderBy}` : '';
-                    const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 100';
-                    query = `SELECT "${widget.xAxis}", "${widget.yAxis}" FROM dataset ${whereClause} ${orderClause} ${limitClause}`;
-                } else {
-                    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
-
-                    const orderCol = widget.orderBy === 'ASC' || widget.orderBy === 'DESC' ? `"${widget.yAxis}"` : `"${widget.xAxis}"`;
-                    const orderDir = widget.orderBy || 'DESC';
-                    const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 50';
-
-                    query = `
-                        SELECT 
-                            "${widget.xAxis}", 
-                            ${aggExpr} as "${widget.yAxis}"
-                        FROM dataset 
-                        ${whereClause}
-                        GROUP BY "${widget.xAxis}"
-                        ORDER BY ${orderCol} ${orderDir}
-                        ${limitClause}
-                    `;
-                }
                 if (!datasetId) {
                     setData([]);
                     return;
                 }
 
-                const result = await runQuery(query, { datasetId });
-
-                // Check if result is all nulls (often happens if TRY_CAST fails for all rows)
-                const allNulls = result.length > 0 && result.every(row => row[widget.yAxis] === null);
-                if (allNulls && widget.aggregation !== 'COUNT') {
-                    setError(`Cannot perform ${widget.aggregation} on "${widget.yAxis}": Column is not numeric.`);
+                const built = buildWidgetQueryModel(widget as any, columnsMeta as any, globalFilters as any);
+                if (!built.model) {
+                    setError(built.issue || 'Configuración incompleta.');
                     setData([]);
-                } else {
-                    setData(result);
+                    return;
                 }
+
+                const result = await resolveWidgetVisualizationResult(built.model, columnsMeta as any, datasetId);
+                setData(result.rows);
+                setError(result.issue);
             } catch (err: unknown) {
                 appLogger.error('analytics', 'WIDGET_QUERY_FAILED', 'Failed to fetch widget data.', {
                     error: err,
@@ -613,6 +546,8 @@ WidgetCard.displayName = 'WidgetCard';
 const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string }, ReportCanvasProps>(({
     dataset,
     initialReportId,
+    initialWidgets = [],
+    initialPresentation,
     savedDatasets = [],
     onReportDeleted,
     onChangesStatusChange,
@@ -678,7 +613,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
     const [user, setUser] = useState<any>(null); // Supabase User type can be complex, using any temporarily but scoped
     const [reportId, setReportId] = useState<string | null>(initialReportId || null);
-    const [reportName, setReportName] = useState(dataset.name);
+    const [reportName, setReportName] = useState(initialPresentation?.title || dataset.name);
     const [isReportSettingsOpen, setIsReportSettingsOpen] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
     const [lastSavedState, setLastSavedState] = useState<string>('');
@@ -739,7 +674,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const userId = user?.id;
     useEffect(() => {
         if (!dataset.id || !userId) {
-            setLastSavedState(JSON.stringify({ widgets: [], reportName: dataset.name, globalFilters: [] }));
+            setLastSavedState(JSON.stringify({ widgets: initialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
             return;
         }
 
@@ -762,23 +697,23 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 } else {
                     // If ID was provided but not found, reset or keep current? 
                     // Mostly fails if report was deleted.
-                    setWidgets([]);
+                    setWidgets(initialWidgets);
                     setGlobalFilters([]);
                     setReportId(null);
-                    setReportName(dataset.name);
-                    setLastSavedState(JSON.stringify({ widgets: [], reportName: dataset.name, globalFilters: [] }));
+                    setReportName(initialPresentation?.title || dataset.name);
+                    setLastSavedState(JSON.stringify({ widgets: initialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
                 }
             });
         } else {
             // New report mode - clear everything
-            setWidgets([]);
+            setWidgets(initialWidgets);
             setGlobalFilters([]);
             setReportId(null);
-            setReportName(dataset.name);
+            setReportName(initialPresentation?.title || dataset.name);
             setLastSaved(null);
-            setLastSavedState(JSON.stringify({ widgets: [], reportName: dataset.name, globalFilters: [] }));
+            setLastSavedState(JSON.stringify({ widgets: initialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
         }
-    }, [dataset.id, initialReportId, dataset.name, userId]);
+    }, [dataset.id, initialPresentation?.title, initialReportId, initialWidgets, dataset.name, userId]);
     const handleSave = async (isSaveAs: boolean = false) => {
         if (!user || !dataset.id) return;
 
@@ -808,7 +743,8 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 user_id: user.id,
                 name: nameToSave,
                 widgets: sanitizedWidgets,
-                filters: globalFilters
+                filters: globalFilters,
+                presentation: initialPresentation ? { ...initialPresentation, title: nameToSave } : undefined
             };
 
             if (!isNewReport) {

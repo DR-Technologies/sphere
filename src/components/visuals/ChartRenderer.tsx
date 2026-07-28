@@ -13,7 +13,7 @@ export type ChartType = 'bar' | 'line' | 'pie' | 'area' | 'table' | 'treemap' | 
 
 interface ChartRendererProps {
     type: ChartType;
-    data: Record<string, any>[];
+    data: Record<string, unknown>[];
     xAxis: string;
     yAxis: string;
     columnsMeta?: { name: string; type: string }[];
@@ -32,6 +32,7 @@ interface ChartRendererProps {
     dateDisplayFormat?: 'default' | 'short';
     showCardLabel?: boolean;
     cardValueSize?: 'small' | 'medium' | 'large';
+    tableMaxHeight?: number;
 }
 
 const DEFAULT_COLORS = ['#8b5cf6', '#22d3ee', '#f43f5e', '#10b981', '#f59e0b', '#6366f1', '#ec4899'];
@@ -54,12 +55,10 @@ export default function ChartRenderer({
     xAxis,
     yAxis,
     columnsMeta = [],
-    widgetTitle,
     latitudeField,
     longitudeField,
     orientation = 'vertical',
     colorScheme = 'varied',
-    colorByCategory = true,
     colors = DEFAULT_COLORS,
     customColor,
     showLegend = true,
@@ -68,21 +67,43 @@ export default function ChartRenderer({
     numberFormat = 'standard',
     dateDisplayFormat = 'default',
     showCardLabel = true,
-    cardValueSize = 'medium'
+    cardValueSize = 'medium',
+    tableMaxHeight = 320
 }: ChartRendererProps) {
     const [isMounted, setIsMounted] = React.useState(false);
+    const containerRef = React.useRef<HTMLDivElement | null>(null);
+    const [containerSize, setContainerSize] = React.useState({ width: 0, height: 0 });
 
     React.useEffect(() => {
         setIsMounted(true);
     }, []);
 
-    const getColors = React.useCallback(() => {
+    React.useEffect(() => {
+        const element = containerRef.current;
+        if (!element || typeof ResizeObserver === 'undefined') return;
+
+        const updateSize = () => {
+            const rect = element.getBoundingClientRect();
+            setContainerSize({ width: rect.width, height: rect.height });
+        };
+
+        updateSize();
+
+        const observer = new ResizeObserver(() => {
+            updateSize();
+        });
+
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
+
+    const getColors = () => {
         if (colorScheme === 'solid') return [customColor || colors[0]];
         if (colorScheme === 'blues') return BLUE_COLORS;
         return colors;
-    }, [colorScheme, customColor, colors]);
+    };
 
-    const activeColors = React.useMemo(() => getColors(), [getColors]);
+    const activeColors = getColors();
 
     const getBaseFieldName = (fieldName?: string) => {
         if (!fieldName) return '';
@@ -126,7 +147,7 @@ export default function ChartRenderer({
         return null;
     };
 
-    const formatDisplayValue = React.useCallback((value: unknown, fieldName?: string) => {
+    const formatDisplayValue = (value: unknown, fieldName?: string) => {
         const normalizedDate = normalizeDateValue(value, fieldName);
         if (normalizedDate) {
             if (dateDisplayFormat === 'short') {
@@ -141,9 +162,9 @@ export default function ChartRenderer({
             return value.toLocaleString();
         }
         return String(value ?? '');
-    }, [dateDisplayFormat, numberFormat]);
+    };
 
-    const formatMetricValue = React.useCallback((value: unknown) => {
+    const formatMetricValue = (value: unknown) => {
         if (typeof value === 'number' && Number.isFinite(value)) {
             if (numberFormat === 'compact') {
                 return new Intl.NumberFormat('es-CO', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
@@ -151,7 +172,7 @@ export default function ChartRenderer({
             return new Intl.NumberFormat('es-CO', { maximumFractionDigits: 2 }).format(value);
         }
         return formatDisplayValue(value);
-    }, [formatDisplayValue, numberFormat]);
+    };
 
     const renderTreemapNode = (props: TreemapNodeProps) => {
         const { x = 0, y = 0, width = 0, height = 0, name = '', fill = '#8884d8' } = props;
@@ -194,7 +215,18 @@ export default function ChartRenderer({
         );
     };
 
-    const renderTooltipContent = React.useCallback(({ active, payload, label }: { active?: boolean; payload?: readonly Record<string, any>[]; label?: string | number }) => {
+    const renderTooltipContent = ({ active, payload, label }: {
+        active?: boolean;
+        payload?: ReadonlyArray<{
+            payload: Record<string, unknown>;
+            color?: string;
+            fill?: string;
+            name?: string;
+            value?: unknown;
+            dataKey?: string;
+        }>;
+        label?: string | number;
+    }) => {
         if (active && payload && payload.length) {
             const data = payload[0].payload;
             return (
@@ -209,26 +241,26 @@ export default function ChartRenderer({
             );
         }
         return null;
-    }, [formatDisplayValue, xAxis, yAxis]);
+    };
 
-    const commonProps = React.useMemo(() => ({
+    const commonProps = {
         data,
         margin: { top: 10, right: 30, left: 0, bottom: 20 },
         style: { fontFamily: CHART_FONT_FAMILY }
-    }), [data]);
+    };
 
-    const axisProps = React.useMemo(() => ({
+    const axisProps = {
         stroke: 'var(--text-muted)',
         fontSize: 11,
         tickLine: false,
         axisLine: false,
         tick: { fontFamily: CHART_FONT_FAMILY, fontSize: 11, fill: 'var(--text-muted)' }
-    }), []);
+    };
 
-    const legendProps = React.useMemo(() => ({
+    const legendProps = {
         iconType: 'circle' as const,
         wrapperStyle: { fontFamily: CHART_FONT_FAMILY, fontSize: '11px' }
-    }), []);
+    };
 
     const mapPoints = React.useMemo(() => {
         return data
@@ -243,29 +275,59 @@ export default function ChartRenderer({
             .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lon) && point.lat >= -90 && point.lat <= 90 && point.lon >= -180 && point.lon <= 180);
     }, [activeColors, data, latitudeField, longitudeField, xAxis, yAxis]);
 
+    const chartMinHeight = type === 'pie' ? 260 : type === 'treemap' ? 250 : 240;
+    const hasRenderableSeriesData = React.useMemo(() => {
+        if (type === 'card' || type === 'table' || type === 'map') return true;
+
+        return data.some((row) => {
+            const dimensionValue = row[xAxis];
+            const metricValue = row[yAxis];
+            const hasDimension = dimensionValue !== null && dimensionValue !== undefined && String(dimensionValue).trim() !== '';
+            const numericMetric = typeof metricValue === 'number' ? metricValue : Number(metricValue);
+            return hasDimension && Number.isFinite(numericMetric);
+        });
+    }, [data, type, xAxis, yAxis]);
+
+    const responsiveHeight = containerSize.height > 0 ? containerSize.height : chartMinHeight;
+
     if (!isMounted) return <div style={{ height: '100%', width: '100%' }} />;
 
     if (!data || data.length === 0) {
         return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>No data available</div>;
     }
 
+    if (!hasRenderableSeriesData && type !== 'card' && type !== 'table' && type !== 'map') {
+        return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', textAlign: 'center' }}>No valid data available for this visualization</div>;
+    }
+
     if (type === 'table') {
         const columns = Object.keys(data[0]);
         return (
-            <div style={{ width: '100%', height: '100%', overflow: 'auto', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)' }}>
+            <div
+                style={{
+                    width: '100%',
+                    height: '100%',
+                    maxHeight: `${tableMaxHeight}px`,
+                    overflow: 'auto',
+                    borderRadius: '18px',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02))',
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)'
+                }}
+            >
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
-                    <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 10, boxShadow: '0 1px 0 var(--border)' }}>
+                    <thead style={{ position: 'sticky', top: 0, background: 'rgba(12, 18, 30, 0.92)', zIndex: 10, boxShadow: '0 1px 0 rgba(255,255,255,0.08)' }}>
                         <tr>
                             {columns.map(col => (
-                                <th key={col} style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>{col}</th>
+                                <th key={col} style={{ padding: '12px 14px', textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(12px)' }}>{col}</th>
                             ))}
                         </tr>
                     </thead>
                     <tbody>
                         {data.map((row, i) => (
-                            <tr key={i} style={{ borderBottom: '1px solid var(--border)' }} className="table-row">
+                            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }} className="table-row">
                                 {columns.map(col => (
-                                    <td key={col} style={{ padding: '12px', color: 'var(--foreground)' }}>
+                                    <td key={col} style={{ padding: '11px 14px', color: 'var(--foreground)' }}>
                                         {formatDisplayValue(row[col], col)}
                                     </td>
                                 ))}
@@ -469,8 +531,10 @@ export default function ChartRenderer({
     };
 
     return (
-        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
-            {getChart() || <div style={{ textAlign: 'center', paddingTop: '20%' }}>Chart tipo no soportado</div>}
-        </ResponsiveContainer>
+        <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: `${chartMinHeight}px` }}>
+            <ResponsiveContainer width="100%" height={responsiveHeight} minWidth={0} minHeight={chartMinHeight} debounce={100}>
+                {getChart() || <div style={{ textAlign: 'center', paddingTop: '20%' }}>Chart tipo no soportado</div>}
+            </ResponsiveContainer>
+        </div>
     );
 }

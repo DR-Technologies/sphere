@@ -12,6 +12,7 @@ import type {
   NormalizedDatasetManifest,
   ProfileFromUrlOptions
 } from '../types';
+import { annotateDatasetColumns } from '../semantics';
 
 function detectFileExtension(fileName: string) {
   const match = fileName.toLowerCase().match(/\.(csv|json|xlsx|xls)(\s|\(|$)/);
@@ -285,14 +286,16 @@ async function profileFile(file: File, options?: DatasetImportOptions): Promise<
     };
   });
 
+  const semanticColumns = annotateDatasetColumns(columns, stats);
+
   return {
-    columns,
+    columns: semanticColumns,
     stats,
     preview: normalizedRows.slice(0, 100),
     artifacts: {
       normalizedCsv: Papa.unparse(normalizedRows, { header: true, skipEmptyLines: 'greedy' }),
       normalizedRows,
-      manifest: buildManifest(extension, options, columns, stats)
+      manifest: buildManifest(extension, options, semanticColumns, stats)
     }
   };
 }

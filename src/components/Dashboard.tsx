@@ -16,19 +16,22 @@ import DashboardLayout from './layout/DashboardLayout';
 import FileDropzone from '@/components/upload/FileDropzone';
 import DataTable from '@/components/ui/DataTable';
 import ReportCanvas from './canvas/ReportCanvas';
+import QuickResultView from './quick-result/QuickResultView';
 import LoginView from './auth/LoginView';
 import ThreeDotMenu from './ui/ThreeDotMenu';
 import { ArrowRight, Activity as SphereIcon, Database, FileText, Plus, Edit2, ExternalLink, Trash2, Hash, ALargeSmall, Calendar } from 'lucide-react';
 import { LanguageProvider, useTranslation } from '@/lib/i18n/LanguageContext';
 import SettingsView from './layout/SettingsView';
 import { formatDate } from '@/lib/dateUtils';
+import { buildQuickResultRecommendation } from '@/lib/quickResult/recommendation';
+import type { ReportPresentation, Widget } from '@/lib/widgets/types';
 
 type ViewState = 'home' | 'datasets' | 'upload' | 'reports' | 'settings';
 
 function DashboardContent() {
     const { t } = useTranslation();
     const [activeView, setActiveView] = useState<ViewState>('home');
-    const [step, setStep] = useState<'main' | 'profiling' | 'canvas'>('main');
+    const [step, setStep] = useState<'main' | 'profiling' | 'quick' | 'canvas'>('main');
     const [dataset, setDataset] = useState<any>(null);
     const [isProfiling, setIsProfiling] = useState(false);
     const [user, setUser] = useState<User | null | undefined>(undefined);
@@ -48,6 +51,8 @@ function DashboardContent() {
     const [csvQuoteChar, setCsvQuoteChar] = useState('\"');
     const [jsonOrient, setJsonOrient] = useState<JsonOrient>('records');
     const [dateFormat, setDateFormat] = useState<DateInputFormat>('AUTO');
+    const [quickResultWidgets, setQuickResultWidgets] = useState<Widget[]>([]);
+    const [quickResultPresentation, setQuickResultPresentation] = useState<ReportPresentation | null>(null);
     const canvasRef = React.useRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string } | null>(null);
 
     const handleViewChange = (view: ViewState) => {
@@ -250,7 +255,6 @@ function DashboardContent() {
             const profile = await profileFile(file, importOptions);
             const datasetName = importOptions.sheetName ? `${file.name} (${importOptions.sheetName})` : file.name;
             const datasetData = { name: datasetName, ...profile };
-            setDataset(datasetData);
 
             if (user) {
                 const uploadedAssets = await uploadDatasetAssets(file, user.id, profile.artifacts);
@@ -266,7 +270,12 @@ function DashboardContent() {
                         stats: profile.stats
                     });
                     const syncedDs = await ensureDatasetAnalyticsTable(savedDs, profile);
-                    setDataset({ id: syncedDs.id, name: datasetName, ...profile });
+                    const nextDataset = { id: syncedDs.id, name: datasetName, ...profile };
+                    const recommendation = buildQuickResultRecommendation(nextDataset);
+                    setDataset(nextDataset);
+                    setQuickResultWidgets(recommendation.widgets);
+                    setQuickResultPresentation(recommendation.presentation);
+                    setStep('quick');
                     fetchSavedDatasets(user.id);
                 }
             }
@@ -290,7 +299,12 @@ function DashboardContent() {
                 analyticsManifestUrl: saved.analytics_manifest_url
             });
             const syncedDataset = await ensureDatasetAnalyticsTable(saved, profile);
-            setDataset({ id: syncedDataset.id, name: syncedDataset.name, ...profile });
+            const nextDataset = { id: syncedDataset.id, name: syncedDataset.name, ...profile };
+            const recommendation = buildQuickResultRecommendation(nextDataset);
+            setDataset(nextDataset);
+            setQuickResultWidgets(recommendation.widgets);
+            setQuickResultPresentation(recommendation.presentation);
+            setStep('quick');
         } catch (err) {
             appLogger.error('ingestion', 'LOAD_SAVED_DATASET_FAILED', 'Failed to load saved dataset.', { error: err, meta: { datasetId: saved.id } });
             alert('Failed to load saved dataset.');
@@ -430,11 +444,31 @@ function DashboardContent() {
                     ref={canvasRef}
                     dataset={dataset as any}
                     initialReportId={initialReportId}
+                    initialWidgets={quickResultWidgets}
+                    initialPresentation={quickResultPresentation || undefined}
                     savedDatasets={savedDatasets}
                     onChangesStatusChange={(val) => setHasUnsavedChanges(val)}
                     onSwitchDataset={(ds) => {
                         setHasUnsavedChanges(false);
                         handleLoadSavedDataset(ds);
+                    }}
+                />
+            );
+        }
+
+        if (step === 'quick' && dataset && user && quickResultPresentation) {
+            return (
+                <QuickResultView
+                    dataset={dataset as any}
+                    initialWidgets={quickResultWidgets}
+                    initialPresentation={quickResultPresentation}
+                    initialReportId={initialReportId}
+                    userId={user.id}
+                    onRefine={({ widgets, presentation, reportId }) => {
+                        setQuickResultWidgets(widgets);
+                        setQuickResultPresentation(presentation);
+                        setInitialReportId(reportId || null);
+                        setStep('canvas');
                     }}
                 />
             );

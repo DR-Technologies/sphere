@@ -1,6 +1,9 @@
 export interface DatasetColumn {
   name: string;
   type: string;
+  semanticRole?: string;
+  semanticConfidence?: number;
+  semanticReason?: string;
 }
 
 export interface DatasetColumnStat {
