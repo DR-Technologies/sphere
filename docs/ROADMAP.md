@@ -342,28 +342,261 @@ Estas funcionalidades pertenecen a milestones posteriores.
 
 # M2 — Visual Identity + Animated Data
 
-**Status:** `PLANNED`
+**Status:** `ACTIVE`
 
 Objetivo de alto nivel:
 
-Convertir la fortaleza visual de Sphere en una característica diferencial del producto.
+Convertir la fortaleza visual de Sphere en una característica diferencial del producto, permitiendo transformar un resultado automático en una historia visual animada, reproducible, publicable y exportable.
 
-Enfoque:
+Arquitectura objetivo de M2:
 
-* identidad visual más fuerte;
-* sistema de templates más avanzado;
-* Animated Charts;
+**Story Definition / Snapshot
+→ Playback Engine
+→ Shared Presentation Renderer
+→ Headless Browser
+→ Frames
+→ Native FFmpeg
+→ MP4**
+
+Decisiones de alcance ya resueltas:
+
+* `Story` es una entidad independiente con `sourceReportId?` opcional.
+* `Composition Evolution` permanece en M2 v1 con alcance controlado.
+* `Bar Chart Race` permanece en M2, pero no se usa como primer validador de Playback.
+* `MP4` será server-side y asíncrono desde el inicio.
+* `Public Story` no tendrá autoplay por defecto; mostrará estado inicial + acción clara de `Play`.
+
+## BLOCK 1 — Contracts + Render Architecture
+
+Objetivo:
+
+cerrar correctamente los contratos antes de construir experiencia.
+
+Incluye:
+
+* `StoryDefinition`;
+* `SceneDefinition`;
+* `MaterializedStory`;
+* `MaterializedScene`;
+* `VisualizationRenderModel`;
+* `SceneRenderModel`;
+* `PlaybackState`;
+* Motion model;
+* Visual System.
+
+Reglas:
+
+* `StoryDefinition` no contiene datos materializados;
+* `SceneDefinition` no depende rígidamente de `Widget`;
+* `PlaybackState` no se persiste;
+* `MaterializedStory` contiene únicamente datos necesarios para reproducir;
+* `Recharts` no aparece como dependencia conceptual del Story contract;
+* corregir la dependencia invertida entre `visualSystem` y `quickResult/templates`.
+
+Campos obligatorios donde corresponda:
+
+* `schemaVersion`;
+* `renderModelVersion`.
+
+### DoD
+
+* contratos tipados definitivos de M2;
+* unit tests;
+* scaffolding actual alineado;
+* repo verde;
+* ningún Story contract rígidamente acoplado a `Widget` o `Recharts`.
+
+## BLOCK 2 — Playback + Video Feasibility Spike
+
+Objetivo:
+
+probar temprano que la arquitectura temporal y de render sirve tanto para navegador como para video.
+
+Incluye:
+
+* global controlled clock;
+* play;
+* pause;
+* seek;
+* scene timing;
+* enter / main / exit phases;
+* transitions;
+* overlap cuando corresponda;
+* easing;
+* `frameTime`;
+* deterministic playback.
+
+Render mínimo a validar:
+
+* Intro;
+* KPI Counter;
+* Line Evolution.
+
+### Video Spike
+
+Validar técnicamente:
+
+**Story
+→ headless browser
+→ deterministic frames
+→ native FFmpeg
+→ MP4**
+
+Probar:
+
+* `16:9` en `1080p`;
+* `9:16` en `1080p`.
+
+Medir:
+
+* tiempo de render;
+* CPU / RAM;
+* consistencia;
+* fonts;
+* SVG / charts;
+* calidad;
+* diferencias contra browser preview.
+
+### DoD
+
+* playback determinístico funcional;
+* seek correcto;
+* Intro / KPI / Line reproducibles;
+* MP4 técnico producido en ambas orientaciones;
+* comparación visual razonable browser vs video;
+* arquitectura validada por evidencia.
+
+## BLOCK 3 — Story Product
+
+Objetivo:
+
+convertir la infraestructura validada en una experiencia real de producto.
+
+Incluye:
+
+* `Create Story` desde Quick Result;
+* Automatic Story Generator determinístico;
+* Story Player;
+* Simple Editor;
+* Animated Charts v1.
+
+Reglas del generator:
+
+* `Intro` si aporta;
+* `KPI` para primary measure;
+* `Evolution` cuando existe temporalidad útil;
+* `Ranking` cuando existe dimensión categórica apropiada;
+* `Bar Race` únicamente con suficientes periodos y categorías;
+* `Composition` únicamente cuando semánticamente tenga sentido;
+* `Outro` opcional;
+* tablas no son escenas principales por defecto;
+* no crear escenas solo para completar cantidad.
+
+Edición ligera permitida:
+
+* Play / Pause;
+* Previous / Next;
+* seek;
+* reorder;
+* remove;
+* edit title / subtitle;
+* template;
+* Motion Preset;
+* pacing.
+
+Animated Charts v1:
+
+* KPI Counter;
+* Line Evolution;
+* Bar Ranking;
 * Bar Chart Race;
-* rankings animados;
-* timelines animadas;
-* KPIs animados;
-* Before / After;
-* Presentation / Story Mode;
-* timeline y playback;
-* controles de duración y velocidad;
-* primeras formas de Data Storytelling;
-* pipeline de exportación de vídeo;
-* MP4 como formato prioritario.
+* Composition Evolution acotada.
+
+### DoD
+
+Un usuario puede:
+
+**Quick Result
+→ Create Story
+→ Automatic Story
+→ Play
+→ Edit lightly**
+
+sin conocimientos de animación.
+
+## BLOCK 4 — Persistence + Public Story + Production Export
+
+**Status:** `COMPLETED`
+
+Objetivo:
+
+hacer Story persistente, compartible y exportable.
+
+Persistencia objetivo:
+
+* `stories` con columnas indexables + `story_definition` JSONB versionado;
+* sin tabla `story_scenes` separada inicialmente.
+
+Materialización objetivo:
+
+* por escena;
+* sin materializar datasets completos.
+
+Ejemplos:
+
+* KPI → final value
+* Ranking → ordered items
+* Race → temporal keyframes
+* Line → aggregated series
+* Composition → category shares / temporal shares
+
+Public Story:
+
+**Private Story
+→ Materialize
+→ Snapshot
+→ /story/[slug]**
+
+Debe reutilizar:
+
+* el mismo `Playback Engine`;
+* el mismo `SceneRenderModel`;
+* el mismo `Presentation Renderer`.
+
+Export objetivo:
+
+**Export
+→ Job
+→ Processing
+→ Completed / Failed
+→ Download**
+
+Requisitos:
+
+* `16:9` `1080p`;
+* `9:16` `1080p`;
+* sin exponer codec / FPS / bitrate al usuario;
+* worker serial/simple aceptable en la primera versión.
+
+### DoD
+
+Story:
+
+* persiste;
+* se publica;
+* funciona sin dataset privado;
+* se reproduce desde URL pública;
+* puede revocarse;
+* puede exportarse a MP4;
+* browser / public / video mantienen coherencia visual.
+
+### Estado actual de M2
+
+* `BLOCK 1` completado.
+* `BLOCK 2` completado.
+* `BLOCK 3` completado.
+* `BLOCK 4` completado.
+* `M2.5 — Visual Polish & Product Coherence` permanece pendiente antes de considerar `M2` como terminado.
 
 ---
 
@@ -418,8 +651,8 @@ La IA complementa los motores determinísticos existentes; no sustituye la lógi
 
 # Restricción importante
 
-Este roadmap no autoriza automáticamente la implementación de `M2`, `M3` o `M4`.
+Este roadmap no autoriza automáticamente la implementación de `M3` o `M4`.
 
-Solo `M1 — Instant Wow` tiene estado `ACTIVE`.
+`M2 — Visual Identity + Animated Data` está `ACTIVE`, pero su ejecución debe respetar el orden interno de bloques aprobado.
 
-Codex puede preparar arquitectura compatible con funcionalidades futuras cuando sea razonable, pero **no debe implementar anticipadamente funcionalidades de milestones posteriores** salvo que sean estrictamente necesarias para completar M1.
+Mientras no exista una nueva instrucción explícita, el trabajo autorizado se limita al bloque activo en curso.

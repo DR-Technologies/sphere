@@ -67,10 +67,16 @@ node_modules/
 .env.local
 .env.*.local
 
-# Next.js build output
-.next/
+# Next.js build output and local backups
+.next*/
 
-# TypeScript incremental cache
-tsconfig.tsbuildinfo
+# TypeScript incremental caches
+*.tsbuildinfo
+
+# Generated test and QA output
+test-results/
+playwright-report/
+blob-report/
+artifacts/
 
 **/.DS_Store

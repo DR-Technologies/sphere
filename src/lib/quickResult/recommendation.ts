@@ -2,6 +2,7 @@ import type { Widget, ReportPresentation } from '@/lib/widgets/types';
 import type { DatasetColumn, DatasetColumnStat } from '@/lib/analytics/types';
 import { summarizeSemantics } from '@/lib/analytics/semantics';
 import { buildDefaultWidgetTitle } from '@/lib/widgets/config';
+import { applyReportLayout } from '@/lib/reportLayout';
 
 interface DatasetLike {
   name: string;
@@ -108,7 +109,7 @@ export function buildQuickResultRecommendation(dataset: DatasetLike): QuickResul
       type: 'treemap',
       xAxis: compositionDimension,
       yAxis: primaryMeasure,
-      aggregation: 'NONE',
+      aggregation: 'SUM',
       showDataLabels: true,
       title: `${compositionDimension} por ${primaryMeasure}`
     }, widgets.length));
@@ -147,7 +148,7 @@ export function buildQuickResultRecommendation(dataset: DatasetLike): QuickResul
   }, widgets.length));
 
   return {
-    widgets: widgets.slice(0, 6),
+    widgets: applyReportLayout(widgets.slice(0, 6)),
     presentation: {
       title: cleanDatasetName(dataset.name),
       subtitle: primaryDate ? `Resultado automático basado en ${primaryMeasure} y ${primaryDate}` : `Resultado automático basado en ${primaryMeasure || 'tu dataset'}`,

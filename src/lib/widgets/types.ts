@@ -2,6 +2,15 @@ import type { ChartType } from '@/components/visuals/ChartRenderer';
 
 export type AggregationType = 'SUM' | 'AVG' | 'COUNT' | 'MIN' | 'MAX' | 'DISTINCT' | 'NONE';
 
+export interface WidgetDisplayLayout {
+  row: number;
+  order: number;
+  colStart: number;
+  colSpan: number;
+  rowSpan: number;
+  mobileColSpan: number;
+}
+
 export interface Widget {
   id: string;
   type: ChartType;
@@ -32,6 +41,7 @@ export interface Widget {
   showWidgetSubtitle?: boolean;
   showCardLabel?: boolean;
   cardValueSize?: 'small' | 'medium' | 'large';
+  displayLayout?: WidgetDisplayLayout;
 }
 
 export interface GlobalFilter {

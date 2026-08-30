@@ -46,6 +46,11 @@ export function getColumnType(columnsMeta: DatasetColumnMeta[], columnName?: str
   return columnsMeta.find((column) => column.name === columnName)?.type?.toUpperCase() || null;
 }
 
+function isNumericColumn(columnsMeta: DatasetColumnMeta[], columnName?: string) {
+  const columnType = getColumnType(columnsMeta, columnName);
+  return Boolean(columnType && NUMERIC_COLUMN_TYPES.has(columnType));
+}
+
 export function isExistingColumn(columnsMeta: DatasetColumnMeta[], columnName?: string) {
   return Boolean(columnName && columnsMeta.some((column) => column.name === columnName));
 }
@@ -99,7 +104,7 @@ export function getWidgetTypeDefaults(type: ChartType, dataset: { columns: Datas
     type,
     xAxis: categoricalCol,
     yAxis: numericCol,
-    aggregation: type === 'treemap' ? 'NONE' : 'SUM',
+    aggregation: 'SUM',
     columns: type === 'table' ? [categoricalCol, numericCol].filter(Boolean) : undefined,
     columnAggregations: type === 'table' ? {} : undefined,
     latitudeField: type === 'map' ? latitudeCol : undefined,
@@ -171,7 +176,9 @@ export function sanitizeWidgetForType(widget: Widget, nextType: ChartType, datas
   if (!PRESENTATION_CONTROL_SUPPORT[nextType].numberFormat) nextWidget.numberFormat = getWidgetDisplayDefaults(nextType).numberFormat;
 
   if (nextType === 'treemap') {
-    nextWidget.aggregation = 'NONE';
+    if (isNumericColumn(dataset.columns, nextWidget.yAxis) && nextWidget.aggregation === 'NONE') {
+      nextWidget.aggregation = 'SUM';
+    }
     nextWidget.orderBy = undefined;
   }
 
@@ -216,7 +223,7 @@ export function getWidgetConfigIssue(widget: Widget, columnsMeta: DatasetColumnM
     return 'Selecciona campos válidos para configurar esta visualización.';
   }
 
-  if (widget.type !== 'treemap' && widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+  if (widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
     return `“${widget.yAxis}” debe ser una columna numérica para usar ${widget.aggregation}.`;
   }
 

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ArrowRight, Copy, Download, Eye, Loader2, RefreshCcw, Sparkles, Trash2, ChevronUp, ChevronDown, ExternalLink, Wand2 } from 'lucide-react';
+import { ArrowRight, Clapperboard, Copy, Download, Eye, Loader2, RefreshCcw, Sparkles, Trash2, ChevronUp, ChevronDown, ExternalLink, Wand2 } from 'lucide-react';
 import ChartRenderer from '@/components/visuals/ChartRenderer';
 import type { DatasetColumnMeta, ReportPresentation, Widget } from '@/lib/widgets/types';
 import { buildWidgetQueryModel } from '@/lib/analytics/queryModel';
@@ -12,6 +12,12 @@ import { exportElementToPng } from '@/lib/export/png';
 import { checkReportLimit, saveReport } from '@/lib/persistence';
 import { getPublicReportUrl, getPublishedSnapshotByReportId, publishReportSnapshot, revokePublishedSnapshot } from '@/lib/publishing';
 import { getPresentationWidgetLayout } from '@/lib/quickResult/layout';
+import { applyReportLayout, getPresentationWidgetPlacement, normalizeReportWidgets, projectWidgetsForPresentation, REPORT_LAYOUT_MOBILE_BREAKPOINT } from '@/lib/reportLayout';
+import { SPHERE_VISUAL_SYSTEM } from '@/lib/visualSystem';
+import PresentationGrid from '@/components/presentation/PresentationGrid';
+import ReportWidgetCard from '@/components/presentation/ReportWidgetCard';
+import ReportPresentationSurface, { type ReportWidgetResult } from '@/components/presentation/ReportPresentationSurface';
+import { isSphereQaStaticRender } from '@/lib/qa';
 
 interface QuickResultViewProps {
   dataset: {
@@ -25,18 +31,115 @@ interface QuickResultViewProps {
   userId: string;
   initialReportId?: string | null;
   onRefine: (payload: { widgets: Widget[]; presentation: ReportPresentation; reportId?: string | null }) => void;
+  onCreateStory: (payload: { widgets: Widget[]; presentation: ReportPresentation; reportId?: string | null }) => void;
+}
+
+function EditableHeroField({
+  value,
+  onChange,
+  placeholder,
+  multiline = false,
+  className,
+  inputLabel
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  multiline?: boolean;
+  className?: string;
+  inputLabel: string;
+}) {
+  const [isEditing, setIsEditing] = React.useState(false);
+  const inputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const displayValue = value.trim() || placeholder;
+
+  React.useEffect(() => {
+    if (!isEditing) return;
+    inputRef.current?.focus();
+    if ('select' in inputRef.current!) {
+      inputRef.current?.select?.();
+    }
+  }, [isEditing]);
+
+  if (!isEditing) {
+    const Element = multiline ? 'p' : 'h1';
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={`Edit ${inputLabel}`}
+        className={`quick-inline-display ${multiline ? 'quick-inline-display-subtitle' : 'quick-inline-display-title'} ${className || ''}`}
+        onClick={() => setIsEditing(true)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setIsEditing(true);
+          }
+        }}
+      >
+        <Element style={{ margin: 0 }}>{displayValue}</Element>
+      </div>
+    );
+  }
+
+  if (multiline) {
+    return (
+      <textarea
+        ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+        aria-label={inputLabel}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={() => setIsEditing(false)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setIsEditing(false);
+          }
+        }}
+        className={`quick-inline-editor quick-inline-editor-subtitle ${className || ''}`}
+        style={{
+          width: '100%',
+          minHeight: 82,
+          resize: 'vertical'
+        }}
+      />
+    );
+  }
+
+  return (
+    <input
+      ref={inputRef as React.RefObject<HTMLInputElement>}
+      aria-label={inputLabel}
+      value={value}
+      placeholder={placeholder}
+      onChange={(event) => onChange(event.target.value)}
+      onBlur={() => setIsEditing(false)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === 'Escape') {
+          setIsEditing(false);
+        }
+      }}
+      className={`quick-inline-editor quick-inline-editor-title ${className || ''}`}
+      style={{ width: '100%' }}
+    />
+  );
 }
 
 function QuickResultWidget({
   widget,
   datasetId,
   columnsMeta,
-  templateColors
+  templateColors,
+  template,
+  onResolved
 }: {
   widget: Widget;
   datasetId?: string;
   columnsMeta: DatasetColumnMeta[];
   templateColors: string[];
+  template: ReturnType<typeof getQuickResultTemplate>;
+  onResolved?: (result: ReportWidgetResult) => void;
 }) {
   const layout = getPresentationWidgetLayout(widget);
   const [data, setData] = React.useState<Record<string, unknown>[]>([]);
@@ -65,13 +168,18 @@ function QuickResultWidget({
         if (!cancelled) {
           setData(result.rows);
           setError(result.issue);
+          onResolved?.({ widgetId: widget.id, rows: result.rows, error: result.issue });
         }
       } catch (err) {
         appLogger.error('analytics', 'QUICK_RESULT_WIDGET_FAILED', 'Failed to fetch quick result widget data.', {
           error: err,
           meta: { widgetId: widget.id, widgetType: widget.type }
         });
-        if (!cancelled) setError(getErrorMessage(err, 'No se pudo cargar esta visualización.'));
+        if (!cancelled) {
+          const message = getErrorMessage(err, 'No se pudo cargar esta visualización.');
+          setError(message);
+          onResolved?.({ widgetId: widget.id, rows: [], error: message });
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -82,63 +190,40 @@ function QuickResultWidget({
     return () => {
       cancelled = true;
     };
-  }, [columnsMeta, datasetId, widget]);
+  }, [columnsMeta, datasetId, onResolved, widget]);
 
   return (
-    <div className="quick-widget-card" style={{ minHeight: layout.minHeight }}>
-      {(widget.showWidgetTitle !== false || widget.showWidgetSubtitle !== false) && (
-        <div style={{ marginBottom: '16px' }}>
-          {widget.showWidgetTitle !== false && (
-            <h3 style={{ fontSize: widget.type === 'card' ? '1rem' : '1.125rem', fontWeight: 700, marginBottom: '4px' }}>{widget.title}</h3>
-          )}
-          {widget.showWidgetSubtitle !== false && widget.type !== 'card' && (
-            <p style={{ fontSize: '0.8rem', color: 'var(--quick-muted)' }}>
-              {widget.type === 'table'
-                ? 'Detalle'
-                : widget.type === 'map'
-                  ? `${widget.yAxis} por ubicación`
-                  : `${widget.aggregation !== 'NONE' ? `${widget.aggregation}(${widget.yAxis})` : widget.yAxis} por ${widget.xAxis}`}
-            </p>
-          )}
+    <ReportWidgetCard widget={widget} template={template} layout={layout} error={error}>
+      {loading ? (
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}>
+          <Loader2 size={28} className="animate-spin" />
         </div>
+      ) : (
+        <ChartRenderer
+          type={widget.type}
+          data={data}
+          xAxis={widget.xAxis}
+          yAxis={widget.yAxis}
+          columnsMeta={columnsMeta}
+          widgetTitle={widget.title}
+          latitudeField={widget.latitudeField}
+          longitudeField={widget.longitudeField}
+          orientation={widget.orientation}
+          colorScheme={widget.colorScheme}
+          colorByCategory={widget.colorByCategory}
+          customColor={widget.customColor}
+          showLegend={widget.showLegend}
+          showTooltip={widget.showTooltip}
+          showDataLabels={widget.showDataLabels}
+          numberFormat={widget.numberFormat}
+          dateDisplayFormat={widget.dateDisplayFormat}
+          showCardLabel={widget.showCardLabel}
+          cardValueSize={widget.cardValueSize}
+          tableMaxHeight={layout.maxTableHeight}
+          colors={templateColors}
+        />
       )}
-
-      <div style={{ flex: 1, minHeight: layout.chartAreaMinHeight, position: 'relative' }}>
-        {loading ? (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Loader2 size={28} className="animate-spin" />
-          </div>
-        ) : error ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100%', textAlign: 'center', color: '#fda4af' }}>
-            {error}
-          </div>
-        ) : (
-          <ChartRenderer
-            type={widget.type}
-            data={data}
-            xAxis={widget.xAxis}
-            yAxis={widget.yAxis}
-            columnsMeta={columnsMeta}
-            widgetTitle={widget.title}
-            latitudeField={widget.latitudeField}
-            longitudeField={widget.longitudeField}
-            orientation={widget.orientation}
-            colorScheme={widget.colorScheme}
-            colorByCategory={widget.colorByCategory}
-            customColor={widget.customColor}
-            showLegend={widget.showLegend}
-            showTooltip={widget.showTooltip}
-            showDataLabels={widget.showDataLabels}
-            numberFormat={widget.numberFormat}
-            dateDisplayFormat={widget.dateDisplayFormat}
-            showCardLabel={widget.showCardLabel}
-            cardValueSize={widget.cardValueSize}
-            tableMaxHeight={layout.maxTableHeight}
-            colors={templateColors}
-          />
-        )}
-      </div>
-    </div>
+    </ReportWidgetCard>
   );
 }
 
@@ -148,20 +233,36 @@ export default function QuickResultView({
   initialPresentation,
   userId,
   initialReportId = null,
-  onRefine
+  onRefine,
+  onCreateStory
 }: QuickResultViewProps) {
-  const [widgets, setWidgets] = React.useState<Widget[]>(initialWidgets);
+  const [widgets, setWidgets] = React.useState<Widget[]>(() => normalizeReportWidgets(initialWidgets));
   const [presentation, setPresentation] = React.useState<ReportPresentation>(initialPresentation);
   const [reportId, setReportId] = React.useState<string | null>(initialReportId);
   const [isPublishing, setIsPublishing] = React.useState(false);
   const [isExporting, setIsExporting] = React.useState(false);
   const [publishedSlug, setPublishedSlug] = React.useState<string | null>(null);
   const [publishMessage, setPublishMessage] = React.useState<string | null>(null);
-  const exportRef = React.useRef<HTMLDivElement>(null);
+  const [widgetResults, setWidgetResults] = React.useState<Record<string, ReportWidgetResult>>({});
+  const [isMobileProjection, setIsMobileProjection] = React.useState(false);
+  const exportSurfaceRef = React.useRef<HTMLDivElement>(null);
+  const shell = SPHERE_VISUAL_SYSTEM.shell;
+  const qaStaticRender = React.useMemo(() => isSphereQaStaticRender(), []);
 
   React.useEffect(() => {
-    setWidgets(initialWidgets);
+    setWidgets(normalizeReportWidgets(initialWidgets));
+    setWidgetResults({});
   }, [initialWidgets]);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const media = window.matchMedia(`(max-width: ${REPORT_LAYOUT_MOBILE_BREAKPOINT}px)`);
+    const sync = () => setIsMobileProjection(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
 
   React.useEffect(() => {
     setPresentation(initialPresentation);
@@ -177,6 +278,15 @@ export default function QuickResultView({
   }, [initialReportId]);
 
   const activeTemplate = getQuickResultTemplate(presentation.templateId);
+  const presentationWidgets = React.useMemo(
+    () => projectWidgetsForPresentation(widgets, isMobileProjection),
+    [isMobileProjection, widgets]
+  );
+  const persistedWidgets = React.useMemo(() => normalizeReportWidgets(widgets), [widgets]);
+  const resolvedWidgetResults = React.useMemo(
+    () => persistedWidgets.map((widget) => widgetResults[widget.id] || { widgetId: widget.id, rows: [], error: null }),
+    [persistedWidgets, widgetResults]
+  );
 
   async function ensureSavedReport() {
     if (!dataset.id) {
@@ -194,7 +304,7 @@ export default function QuickResultView({
       dataset_id: dataset.id,
       user_id: userId,
       name: presentation.title,
-      widgets,
+      widgets: persistedWidgets,
       filters: [],
       presentation
     };
@@ -224,7 +334,7 @@ export default function QuickResultView({
         title: presentation.title,
         subtitle: presentation.subtitle,
         templateId: presentation.templateId,
-        widgets,
+        widgets: persistedWidgets,
         columns: dataset.columns,
         userId,
         existingSlug: publishedSlug
@@ -250,11 +360,20 @@ export default function QuickResultView({
   }
 
   async function handleExport() {
-    if (!exportRef.current) return;
+    const hasPendingWidgets = widgets.some((widget) => !widgetResults[widget.id]);
+    if (hasPendingWidgets) {
+      setPublishMessage('Espera un momento mientras terminamos de preparar el PNG.');
+      return;
+    }
     setIsExporting(true);
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     try {
-      await exportElementToPng(exportRef.current, `${presentation.title || dataset.name}.png`);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!exportSurfaceRef.current) {
+        throw new Error('No se pudo montar la superficie de exportación.');
+      }
+      await exportElementToPng(exportSurfaceRef.current, `${presentation.title || dataset.name}.png`, {
+        waitForSelector: '[data-export-ready="true"]'
+      });
     } finally {
       setIsExporting(false);
     }
@@ -269,7 +388,20 @@ export default function QuickResultView({
       }
     }
 
-    onRefine({ widgets, presentation, reportId });
+    onRefine({ widgets: persistedWidgets, presentation, reportId });
+  }
+
+  async function handleCreateStory() {
+    if (dataset.id) {
+      try {
+        await ensureSavedReport();
+      } catch (err) {
+        setPublishMessage(getErrorMessage(err, 'No se pudo preparar el resultado para Story.'));
+        return;
+      }
+    }
+
+    onCreateStory({ widgets: persistedWidgets, presentation, reportId });
   }
 
   function moveWidget(id: string, direction: -1 | 1) {
@@ -279,11 +411,7 @@ export default function QuickResultView({
       if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
       const updated = [...current];
       [updated[index], updated[nextIndex]] = [updated[nextIndex], updated[index]];
-      return updated.map((widget, itemIndex) => ({
-        ...widget,
-        x: (itemIndex % 2) * 6,
-        y: Math.floor(itemIndex / 2) * 3
-      }));
+      return applyReportLayout(updated);
     });
   }
 
@@ -293,11 +421,28 @@ export default function QuickResultView({
       style={{
         minHeight: '100%',
         padding: '28px',
-        background: activeTemplate.background,
-        color: activeTemplate.text
+        background: activeTemplate.pageBackground,
+        color: activeTemplate.text,
+        ['--report-background' as string]: activeTemplate.pageBackground,
+        ['--report-surface' as string]: activeTemplate.surface,
+        ['--report-surface-alt' as string]: activeTemplate.surfaceAlt,
+        ['--report-border' as string]: activeTemplate.border,
+        ['--report-text' as string]: activeTemplate.text,
+        ['--report-muted' as string]: activeTemplate.mutedText,
+        ['--report-accent' as string]: activeTemplate.accent
       }}
     >
-      <div ref={exportRef} className="quick-export-frame" style={{ maxWidth: '1400px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div
+        className="quick-export-frame"
+        style={{
+          width: '100%',
+          maxWidth: '1400px',
+          margin: '0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '20px'
+        }}
+      >
         <div className="quick-hero">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: activeTemplate.accent, fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.14em', fontWeight: 700 }}>
             <Sparkles size={16} />
@@ -305,15 +450,20 @@ export default function QuickResultView({
           </div>
           <div className="quick-hero-grid">
             <div>
-              <input
+              <EditableHeroField
                 value={presentation.title}
-                onChange={(event) => setPresentation((current) => ({ ...current, title: event.target.value }))}
-                style={{ width: '100%', fontSize: 'clamp(2rem, 4vw, 3.4rem)', fontWeight: 800, color: activeTemplate.text, background: 'transparent', border: 'none', padding: 0, marginBottom: '10px' }}
+                placeholder={dataset.name}
+                onChange={(value) => setPresentation((current) => ({ ...current, title: value }))}
+                className="quick-hero-title"
+                inputLabel="Report title"
               />
-              <textarea
+              <EditableHeroField
                 value={presentation.subtitle}
-                onChange={(event) => setPresentation((current) => ({ ...current, subtitle: event.target.value }))}
-                style={{ width: '100%', minHeight: 72, resize: 'vertical', background: 'transparent', border: 'none', color: activeTemplate.mutedText, fontSize: '1rem', lineHeight: 1.6, padding: 0 }}
+                placeholder="Haz clic para agregar un subtítulo."
+                onChange={(value) => setPresentation((current) => ({ ...current, subtitle: value }))}
+                multiline
+                className="quick-hero-subtitle"
+                inputLabel="Report subtitle"
               />
             </div>
             <div className="quick-actions-panel">
@@ -333,6 +483,10 @@ export default function QuickResultView({
                 ))}
               </div>
               <div className="quick-actions">
+                <button className="quick-btn primary" onClick={handleCreateStory}>
+                  <Clapperboard size={16} />
+                  Create Story
+                </button>
                 <button className="quick-btn primary" onClick={handleRefine}>
                   <Wand2 size={16} />
                   Refine
@@ -367,22 +521,23 @@ export default function QuickResultView({
           </div>
         </div>
 
-        <div className="quick-board" style={{
+        <PresentationGrid style={{
           '--quick-surface': activeTemplate.surface,
           '--quick-surface-alt': activeTemplate.surfaceAlt,
           '--quick-border': activeTemplate.border,
           '--quick-text': activeTemplate.text,
           '--quick-muted': activeTemplate.mutedText,
           '--quick-accent': activeTemplate.accent,
-          '--quick-glow': activeTemplate.glow
+          '--quick-glow': activeTemplate.glow,
+          gap: `${shell.gridGap}px`
         } as React.CSSProperties}>
-          {widgets.map((widget, index) => {
-            const layout = getPresentationWidgetLayout(widget);
+          {presentationWidgets.map((widget, index) => {
+            const placement = getPresentationWidgetPlacement(widget, index);
             return (
               <section
                 key={widget.id}
-                className={`quick-grid-item quick-type-${widget.type}`}
-                style={{ gridColumn: `span ${layout.columnSpan}`, minHeight: layout.minHeight }}
+                className={`quick-grid-item quick-type-${widget.type} sphere-presentation-grid-item`}
+                style={{ ...placement, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}
               >
                 <div className="quick-item-toolbar">
                   <span>{index + 1}</span>
@@ -393,7 +548,7 @@ export default function QuickResultView({
                     <button className="icon-btn" onClick={() => moveWidget(widget.id, 1)} aria-label="Mover abajo">
                       <ChevronDown size={14} />
                     </button>
-                    <button className="icon-btn" onClick={() => setWidgets((current) => current.filter((item) => item.id !== widget.id))} aria-label="Eliminar">
+                    <button className="icon-btn" onClick={() => setWidgets((current) => applyReportLayout(current.filter((item) => item.id !== widget.id)))} aria-label="Eliminar">
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -403,51 +558,171 @@ export default function QuickResultView({
                   datasetId={dataset.id}
                   columnsMeta={dataset.columns}
                   templateColors={activeTemplate.chartColors}
+                  template={activeTemplate}
+                  onResolved={(result) => {
+                    setWidgetResults((current) => {
+                      const previous = current[result.widgetId];
+                      if (previous && previous.error === result.error && JSON.stringify(previous.rows) === JSON.stringify(result.rows)) {
+                        return current;
+                      }
+                      return {
+                        ...current,
+                        [result.widgetId]: result
+                      };
+                    });
+                  }}
                 />
               </section>
             );
           })}
-        </div>
+        </PresentationGrid>
 
         <div className="quick-footer-note" style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', color: activeTemplate.mutedText }}>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <RefreshCcw size={16} />
             Puedes cambiar template, editar textos, quitar bloques y luego entrar a Refine solo si necesitas más control.
           </div>
-          <button className="quick-btn primary" onClick={handleRefine}>
-            Ir a Refine
-            <ArrowRight size={16} />
-          </button>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button className="quick-btn primary" onClick={handleCreateStory}>
+              Create Story
+              <ArrowRight size={16} />
+            </button>
+            <button className="quick-btn" onClick={handleRefine}>
+              Ir a Refine
+              <ArrowRight size={16} />
+            </button>
+          </div>
         </div>
       </div>
+
+      {isExporting || qaStaticRender ? (
+        <div
+          data-testid="report-export-host"
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            left: '-20000px',
+            top: 0,
+            width: '1400px',
+            pointerEvents: 'none',
+            opacity: 1
+          }}
+        >
+          <div ref={exportSurfaceRef}>
+            <ReportPresentationSurface
+              rootTestId="report-export-surface"
+              title={presentation.title || dataset.name}
+              subtitle={presentation.subtitle}
+              template={activeTemplate}
+              widgets={widgets}
+              columnsMeta={dataset.columns}
+              widgetResults={resolvedWidgetResults}
+              mode="export"
+              width={1400}
+              maxWidth={1400}
+              exportReady
+              eyebrow={(
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: activeTemplate.accent, fontSize: '0.76rem', textTransform: 'uppercase', letterSpacing: '0.14em', fontWeight: 700 }}>
+                  <Sparkles size={16} />
+                  Instant Wow
+                </div>
+              )}
+            />
+          </div>
+        </div>
+      ) : null}
 
       <style jsx>{`
         .quick-hero,
         .quick-grid-item,
         .quick-actions-panel {
-          backdrop-filter: blur(24px);
-          -webkit-backdrop-filter: blur(24px);
+          backdrop-filter: ${activeTemplate.id === 'dark' ? 'blur(18px) saturate(140%)' : 'blur(10px) saturate(105%)'};
+          -webkit-backdrop-filter: ${activeTemplate.id === 'dark' ? 'blur(18px) saturate(140%)' : 'blur(10px) saturate(105%)'};
         }
         .quick-export-frame {
           position: relative;
+          min-width: 0;
         }
         .quick-hero {
           border: 1px solid ${activeTemplate.border};
-          background: ${activeTemplate.surface};
-          border-radius: 30px;
+          background: ${activeTemplate.header};
+          border-radius: ${shell.heroRadius}px;
           padding: 28px;
-          box-shadow: 0 26px 50px rgba(3, 7, 18, 0.28);
+          box-shadow: ${activeTemplate.shadow};
         }
         .quick-hero-grid {
           display: grid;
           grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.95fr);
-          gap: 24px;
+          gap: 28px;
           align-items: start;
         }
-        .quick-actions-panel {
-          background: ${activeTemplate.surfaceAlt};
+        .quick-hero-title {
+          font-size: clamp(2rem, 4vw, 3.4rem);
+          font-weight: 700;
+          line-height: 0.96;
+          margin-bottom: 12px !important;
+          color: ${activeTemplate.text};
+        }
+        .quick-hero-subtitle {
+          color: ${activeTemplate.mutedText};
+          font-size: 1.02rem;
+          line-height: 1.65;
+          min-height: 48px;
+        }
+        .quick-inline-editor {
+          display: block;
+          border-radius: 12px;
           border: 1px solid ${activeTemplate.border};
-          border-radius: 24px;
+          background: ${activeTemplate.control};
+          color: ${activeTemplate.text};
+          padding: 14px 16px;
+          font: inherit;
+          outline: none;
+          box-shadow: 0 0 0 1px transparent;
+        }
+        .quick-inline-display {
+          display: block;
+          width: 100%;
+          border: none;
+          background: transparent;
+          color: inherit;
+          padding: 0;
+          text-align: left;
+          cursor: text;
+        }
+        .quick-inline-display-title {
+          margin-bottom: 12px;
+        }
+        .quick-inline-display-title :global(h1) {
+          font-size: clamp(2rem, 4vw, 3.2rem);
+          font-weight: 700;
+          line-height: 0.96;
+          letter-spacing: -0.04em;
+        }
+        .quick-inline-display-subtitle :global(p) {
+          font-size: 1.02rem;
+          line-height: 1.65;
+          color: ${activeTemplate.mutedText};
+          white-space: pre-wrap;
+        }
+        .quick-inline-editor:focus {
+          border-color: ${activeTemplate.borderStrong};
+          box-shadow: 0 0 0 1px ${activeTemplate.borderStrong}, 0 12px 26px ${activeTemplate.glow};
+        }
+        .quick-inline-editor-title {
+          font-size: clamp(2rem, 4vw, 3.2rem);
+          font-weight: 700;
+          line-height: 0.96;
+          margin-bottom: 12px;
+        }
+        .quick-inline-editor-subtitle {
+          font-size: 1.02rem;
+          line-height: 1.65;
+        }
+        .quick-actions-panel {
+          background: ${activeTemplate.panel};
+          border: 1px solid ${activeTemplate.border};
+          border-radius: ${shell.panelRadius}px;
           padding: 18px;
           display: flex;
           flex-direction: column;
@@ -460,9 +735,9 @@ export default function QuickResultView({
         }
         .template-chip {
           border: 1px solid ${activeTemplate.border};
-          background: rgba(255,255,255,0.02);
+          background: ${activeTemplate.control};
           color: ${activeTemplate.text};
-          border-radius: 18px;
+          border-radius: 12px;
           padding: 12px;
           text-align: left;
           display: flex;
@@ -476,7 +751,8 @@ export default function QuickResultView({
           line-height: 1.35;
         }
         .template-chip.active {
-          box-shadow: 0 0 0 1px ${activeTemplate.accent}, 0 16px 30px ${activeTemplate.glow};
+          background: ${activeTemplate.controlHover};
+          box-shadow: 0 0 0 1px ${activeTemplate.accent}, 0 12px 26px ${activeTemplate.glow};
         }
         .quick-actions {
           display: flex;
@@ -486,9 +762,9 @@ export default function QuickResultView({
         .quick-btn,
         .icon-btn {
           border: 1px solid ${activeTemplate.border};
-          background: rgba(255,255,255,0.04);
+          background: ${activeTemplate.control};
           color: ${activeTemplate.text};
-          border-radius: 16px;
+          border-radius: 10px;
           padding: 10px 14px;
           display: inline-flex;
           align-items: center;
@@ -497,50 +773,51 @@ export default function QuickResultView({
           text-decoration: none;
         }
         .quick-btn.primary {
-          background: linear-gradient(180deg, ${activeTemplate.accent}, rgba(255,255,255,0.18));
-          color: #04111f;
-          border-color: transparent;
+          background: linear-gradient(180deg, ${activeTemplate.accent}, ${activeTemplate.accent});
+          color: ${activeTemplate.accentContrast};
+          border-color: ${activeTemplate.accent};
           font-weight: 700;
         }
         .quick-btn.danger {
-          color: #fecdd3;
+          color: var(--danger-text);
         }
-        .quick-board {
-          display: grid;
-          grid-template-columns: repeat(12, minmax(0, 1fr));
-          gap: 20px;
-          align-items: stretch;
-          grid-auto-flow: dense;
+        .quick-btn:hover,
+        .icon-btn:hover {
+          background: ${activeTemplate.controlHover};
+          border-color: ${activeTemplate.borderStrong};
+        }
+        .quick-btn.primary:hover {
+          background: linear-gradient(180deg, ${activeTemplate.accent}, ${activeTemplate.accent});
+          color: ${activeTemplate.accentContrast};
         }
         .quick-grid-item {
-          border: 1px solid var(--quick-border);
-          background: linear-gradient(180deg, var(--quick-surface), rgba(255,255,255,0.02));
-          border-radius: 28px;
-          padding: 18px 18px 20px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          box-shadow: 0 18px 38px rgba(3, 7, 18, 0.26), inset 0 1px 0 rgba(255,255,255,0.04);
-          min-height: 260px;
-        }
-        .quick-widget-card {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
+          position: relative;
+          min-width: 0;
           min-height: 0;
         }
         .quick-item-toolbar {
-          display: flex;
+          position: absolute;
+          top: 12px;
+          right: 12px;
+          z-index: 3;
+          display: inline-flex;
           align-items: center;
-          justify-content: space-between;
+          gap: 8px;
+          padding: 6px 8px;
+          border-radius: 999px;
           color: var(--quick-muted);
-          font-size: 0.72rem;
+          font-size: 0.68rem;
           text-transform: uppercase;
           letter-spacing: 0.12em;
+          background: color-mix(in srgb, ${activeTemplate.surfaceAlt} 84%, transparent);
+          border: 1px solid ${activeTemplate.border};
+          box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+          backdrop-filter: blur(12px) saturate(120%);
+          -webkit-backdrop-filter: blur(12px) saturate(120%);
         }
         .icon-btn {
           padding: 8px;
-          border-radius: 12px;
+          border-radius: 10px;
         }
         .quick-exporting .quick-actions-panel,
         .quick-exporting .quick-item-toolbar,
@@ -557,14 +834,34 @@ export default function QuickResultView({
           min-height: auto !important;
         }
         @media (max-width: 980px) {
+          .quick-hero {
+            padding: ${shell.pagePaddingMobile}px;
+          }
           .quick-hero-grid {
             grid-template-columns: 1fr;
           }
           .template-switcher {
             grid-template-columns: 1fr;
           }
-          .quick-grid-item {
-            grid-column: span 12 !important;
+          .quick-item-toolbar {
+            right: 10px;
+          }
+        }
+        @media (max-width: 720px) {
+          .quick-actions {
+            display: grid;
+            grid-template-columns: 1fr;
+          }
+          .quick-btn,
+          .icon-btn,
+          .template-chip {
+            width: 100%;
+            justify-content: center;
+          }
+          .quick-grid-item,
+          .quick-footer-note,
+          .quick-actions-panel {
+            min-width: 0;
           }
         }
       `}</style>

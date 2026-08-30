@@ -15,6 +15,21 @@ import { supabase } from '@/lib/supabase';
 import type { ReportPresentation } from '@/lib/widgets/types';
 import { buildWidgetQueryModel } from '@/lib/analytics/queryModel';
 import { resolveWidgetVisualizationResult } from '@/lib/analytics/widgetResult';
+import { getQuickResultTemplate, type QuickResultTemplate } from '@/lib/quickResult/templates';
+import { getPresentationWidgetLayout } from '@/lib/quickResult/layout';
+import ReportWidgetCard from '@/components/presentation/ReportWidgetCard';
+import { normalizeReportWidgets } from '@/lib/reportLayout';
+import { isSphereQaStaticRender } from '@/lib/qa';
+import {
+    getWidgetDefaultSize,
+    getWidgetSizePolicy,
+    normalizeCanvasWidgetLayout,
+    REPORT_EDITOR_GRID_BREAKPOINTS,
+    REPORT_EDITOR_GRID_COLS,
+    REPORT_EDITOR_GRID_COMPACT_TYPE,
+    REPORT_EDITOR_GRID_MARGIN,
+    REPORT_EDITOR_GRID_ROW_HEIGHT
+} from '@/lib/widgets/sizing';
 
 export type AggregationType = 'SUM' | 'AVG' | 'COUNT' | 'MIN' | 'MAX' | 'DISTINCT' | 'NONE';
 
@@ -210,7 +225,7 @@ function getWidgetTypeDefaults(type: ChartType, dataset: ReportCanvasProps['data
         type,
         xAxis: categoricalCol,
         yAxis: numericCol,
-        aggregation: type === 'treemap' ? 'NONE' : 'SUM',
+        aggregation: 'SUM',
         columns: type === 'table' ? [categoricalCol, numericCol].filter(Boolean) : undefined,
         columnAggregations: type === 'table' ? {} : undefined,
         latitudeField: type === 'map' ? latitudeCol : undefined,
@@ -283,7 +298,10 @@ function sanitizeWidgetForType(widget: Widget, nextType: ChartType, dataset: Rep
     if (!PRESENTATION_CONTROL_SUPPORT[nextType].numberFormat) nextWidget.numberFormat = getWidgetDisplayDefaults(nextType).numberFormat;
 
     if (nextType === 'treemap') {
-        nextWidget.aggregation = 'NONE';
+        const nextYAxisType = getColumnType(dataset.columns, nextWidget.yAxis);
+        if (nextYAxisType && NUMERIC_COLUMN_TYPES.has(nextYAxisType) && nextWidget.aggregation === 'NONE') {
+            nextWidget.aggregation = 'SUM';
+        }
         nextWidget.orderBy = undefined;
     }
 
@@ -291,7 +309,12 @@ function sanitizeWidgetForType(widget: Widget, nextType: ChartType, dataset: Rep
         nextWidget.title = buildDefaultWidgetTitle(nextWidget);
     }
 
-    return nextWidget;
+    return normalizeCanvasWidgetLayout(nextWidget);
+}
+
+function normalizeWidgetForCanvas(widget: Widget, dataset: ReportCanvasProps['dataset']) {
+    const sanitized = sanitizeWidgetForType(widget, widget.type, dataset);
+    return normalizeCanvasWidgetLayout(sanitized);
 }
 
 function getWidgetConfigIssue(widget: Widget, columnsMeta: { name: string; type: string }[]) {
@@ -334,7 +357,7 @@ function getWidgetConfigIssue(widget: Widget, columnsMeta: { name: string; type:
         return 'Selecciona campos válidos para configurar esta visualización.';
     }
 
-    if (widget.type !== 'treemap' && widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
+    if (widget.aggregation !== 'NONE' && isNumericAggregation && (!yAxisType || !NUMERIC_COLUMN_TYPES.has(yAxisType))) {
         return `“${widget.yAxis}” debe ser una columna numérica para usar ${widget.aggregation}.`;
     }
 
@@ -372,6 +395,7 @@ const WidgetCard = React.memo(({
     globalFilters,
     columnsMeta,
     datasetId,
+    template,
     onSelect,
     onRemove
 }: {
@@ -380,6 +404,7 @@ const WidgetCard = React.memo(({
     globalFilters: GlobalFilter[];
     columnsMeta: { name: string; type: string }[];
     datasetId?: string;
+    template: QuickResultTemplate;
     onSelect: () => void;
     onRemove: (e: React.MouseEvent) => void;
 }) => {
@@ -387,6 +412,7 @@ const WidgetCard = React.memo(({
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const configIssue = React.useMemo(() => getWidgetConfigIssue(widget, columnsMeta), [widget, columnsMeta]);
+    const qaStaticRender = React.useMemo(() => isSphereQaStaticRender(), []);
 
     useEffect(() => {
         const fetchData = async () => {
@@ -442,78 +468,23 @@ const WidgetCard = React.memo(({
         fetchData();
     }, [configIssue, widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.colorScheme, widget.customColor, widget.colorByCategory, widget.orientation, widget.columnAggregations, widget.latitudeField, widget.longitudeField, datasetId]);
 
+    const layout = getPresentationWidgetLayout(widget as unknown as import('@/lib/widgets/types').Widget);
+
     return (
-        <div
-            className={`glass glass-card ${isActive ? 'active-widget' : ''}`}
-            onClick={onSelect}
-            style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
-        >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                    {(widget.type !== 'card' || widget.showWidgetTitle !== false) && (
-                        <h5 style={{ fontWeight: 600, fontSize: '0.9375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{widget.title}</h5>
-                    )}
-                    {(widget.type !== 'card' || widget.showWidgetSubtitle !== false) && (
-                        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                            {widget.type === 'table'
-                                ? `${widget.columns?.length || 0} fields`
-                                : widget.type === 'card'
-                                    ? `${widget.aggregation}(${widget.yAxis})`
-                                    : widget.type === 'map'
-                                        ? `${widget.yAxis} by ${widget.latitudeField}/${widget.longitudeField}`
-                                : widget.type === 'treemap'
-                                    ? `TreeMap: ${widget.xAxis} x ${widget.yAxis}`
-                                    : `${widget.aggregation !== 'NONE' ? `${widget.aggregation}(${widget.yAxis})` : widget.yAxis} by ${widget.xAxis}`}
-                        </p>
-                    )}
-                </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                        className="nodrag"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            onRemove(e);
-                        }}
-                        onMouseDown={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                        }}
-                        onPointerDown={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                        }}
-                        style={{
-                            background: 'rgba(255, 255, 255, 0.05)',
-                            padding: '6px',
-                            color: 'var(--text-muted)',
-                            border: '1px solid var(--border)',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            zIndex: 100,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center'
-                        }}
-                    >
-                        <X size={16} />
-                    </button>
-                </div>
-            </div>
-
-            <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-                {loading && (
-                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.1)', borderRadius: '8px', zIndex: 10 }}>
-                        <Loader2 size={32} className="animate-spin" color="var(--primary)" />
-                    </div>
-                )}
-
-                {error ? (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#f87171', fontSize: '0.875rem' }}>
-                        {error}
+        <div onClick={onSelect} style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
+            <ReportWidgetCard
+                widget={widget as unknown as import('@/lib/widgets/types').Widget}
+                template={template}
+                layout={layout}
+                error={error}
+                style={isActive ? { boxShadow: `0 0 0 1px ${template.accent}, 0 18px 38px rgba(3, 7, 18, 0.26)` } : undefined}
+            >
+                {loading ? (
+                    <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,0.1)', borderRadius: '12px', zIndex: 10 }}>
+                        <Loader2 size={32} className="animate-spin" color={template.accent} />
                     </div>
                 ) : (
-                    <div style={{ flex: 1, position: 'relative', height: '100%', minHeight: 0 }}>
+                    <div style={{ flex: 1, position: 'relative', height: '100%', minHeight: 0, minWidth: 0, width: '100%', display: 'flex' }}>
                         <ChartRenderer
                             type={widget.type}
                             data={data}
@@ -534,9 +505,66 @@ const WidgetCard = React.memo(({
                             dateDisplayFormat={widget.dateDisplayFormat ?? getWidgetDisplayDefaults(widget.type).dateDisplayFormat}
                             showCardLabel={widget.showCardLabel ?? true}
                             cardValueSize={widget.cardValueSize ?? 'medium'}
+                            tableMaxHeight={layout.maxTableHeight}
+                            colors={template.chartColors}
+                            renderMode={qaStaticRender ? 'qa' : 'interactive'}
                         />
                     </div>
                 )}
+            </ReportWidgetCard>
+            <div
+                style={{
+                    position: 'absolute',
+                    top: 12,
+                    right: 12,
+                    zIndex: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '6px 8px',
+                    borderRadius: '999px',
+                    color: template.mutedText,
+                    fontSize: '0.68rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.12em',
+                    background: `color-mix(in srgb, ${template.surfaceAlt} 84%, transparent)`,
+                    border: `1px solid ${template.border}`,
+                    boxShadow: '0 10px 24px rgba(0, 0, 0, 0.12)',
+                    backdropFilter: 'blur(12px) saturate(120%)',
+                    WebkitBackdropFilter: 'blur(12px) saturate(120%)'
+                }}
+            >
+                <span>{widget.type}</span>
+                <button
+                    className="nodrag"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        onRemove(e);
+                    }}
+                    onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                    }}
+                    onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                    }}
+                    style={{
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        padding: '6px',
+                        color: template.mutedText,
+                        border: `1px solid ${template.border}`,
+                        borderRadius: '999px',
+                        cursor: 'pointer',
+                        zIndex: 100,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                    }}
+                >
+                    <X size={16} />
+                </button>
             </div>
         </div>
     );
@@ -578,18 +606,22 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     }, []);
     const [widgets, setWidgets] = useState<Widget[]>([]);
     const layout = React.useMemo(() => {
-        return widgets.map(w => ({
+        return widgets.map(w => {
+            const policy = getWidgetSizePolicy(w.type);
+
+            return {
             i: w.id,
             x: w.x,
             y: w.y,
             w: w.w,
             h: w.h,
-            minW: 1,
-            maxW: 6,
-            minH: 1,
-            maxH: 6,
+            minW: policy.minW,
+            maxW: policy.maxW,
+            minH: policy.minH,
+            maxH: policy.maxH,
             resizeHandles: ['se'] as ResizeHandleAxis[]
-        }));
+            };
+        });
     }, [widgets]);
 
     const onLayoutChange = React.useCallback((currentLayout: any[]) => {
@@ -611,9 +643,14 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const [isSaving, setIsSaving] = useState(false);
     const [lastSaved, setLastSaved] = useState<Date | null>(null);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const [isNarrowViewport, setIsNarrowViewport] = useState(false);
     const [user, setUser] = useState<any>(null); // Supabase User type can be complex, using any temporarily but scoped
     const [reportId, setReportId] = useState<string | null>(initialReportId || null);
     const [reportName, setReportName] = useState(initialPresentation?.title || dataset.name);
+    const activeTemplate = React.useMemo(
+        () => getQuickResultTemplate(initialPresentation?.templateId || 'modern'),
+        [initialPresentation?.templateId]
+    );
     const [isReportSettingsOpen, setIsReportSettingsOpen] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
     const [lastSavedState, setLastSavedState] = useState<string>('');
@@ -655,6 +692,20 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
         }
     }, [selection]);
 
+    useEffect(() => {
+        if (typeof window === 'undefined') return undefined;
+
+        const media = window.matchMedia('(max-width: 1180px)');
+        const sync = () => {
+            setIsNarrowViewport(media.matches);
+            setIsSidebarCollapsed(media.matches);
+        };
+
+        sync();
+        media.addEventListener('change', sync);
+        return () => media.removeEventListener('change', sync);
+    }, []);
+
     // 1. Manage User Session
     useEffect(() => {
         // Initial session check
@@ -673,8 +724,12 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     // 2. Load Report Data
     const userId = user?.id;
     useEffect(() => {
+        const normalizedInitialWidgets = normalizeReportWidgets(
+            initialWidgets.map((widget) => normalizeWidgetForCanvas(widget, dataset))
+        );
+
         if (!dataset.id || !userId) {
-            setLastSavedState(JSON.stringify({ widgets: initialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
+            setLastSavedState(JSON.stringify({ widgets: normalizedInitialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
             return;
         }
 
@@ -683,7 +738,9 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 const existingReport = reports.find(r => r.id === initialReportId);
 
                 if (existingReport) {
-                    const sanitizedWidgets = existingReport.widgets.map((widget) => sanitizeWidgetForType(widget as Widget, widget.type as ChartType, dataset));
+                    const sanitizedWidgets = normalizeReportWidgets(
+                        existingReport.widgets.map((widget) => normalizeWidgetForCanvas(widget as Widget, dataset))
+                    );
                     setWidgets(sanitizedWidgets);
                     setGlobalFilters(existingReport.filters || []);
                     setReportId(existingReport.id);
@@ -697,21 +754,21 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 } else {
                     // If ID was provided but not found, reset or keep current? 
                     // Mostly fails if report was deleted.
-                    setWidgets(initialWidgets);
+                    setWidgets(normalizedInitialWidgets);
                     setGlobalFilters([]);
                     setReportId(null);
                     setReportName(initialPresentation?.title || dataset.name);
-                    setLastSavedState(JSON.stringify({ widgets: initialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
+                    setLastSavedState(JSON.stringify({ widgets: normalizedInitialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
                 }
             });
         } else {
             // New report mode - clear everything
-            setWidgets(initialWidgets);
+            setWidgets(normalizedInitialWidgets);
             setGlobalFilters([]);
             setReportId(null);
             setReportName(initialPresentation?.title || dataset.name);
             setLastSaved(null);
-            setLastSavedState(JSON.stringify({ widgets: initialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
+            setLastSavedState(JSON.stringify({ widgets: normalizedInitialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
         }
     }, [dataset.id, initialPresentation?.title, initialReportId, initialWidgets, dataset.name, userId]);
     const handleSave = async (isSaveAs: boolean = false) => {
@@ -737,7 +794,9 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
 
         setIsSaving(true);
         try {
-            const sanitizedWidgets = widgets.map((widget) => sanitizeWidgetForType(widget, widget.type, dataset));
+            const sanitizedWidgets = normalizeReportWidgets(
+                widgets.map((widget) => sanitizeWidgetForType(widget, widget.type, dataset))
+            );
             const reportData: any = {
                 dataset_id: dataset.id,
                 user_id: user.id,
@@ -784,13 +843,11 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             return;
         }
 
-        // Horizontal filling logic: 3 columns per row
-        const nextIndex = widgets.length;
-        const x = nextIndex % 3;
-        const y = Math.floor(nextIndex / 3) * 2;
+        const defaultSize = getWidgetDefaultSize(type);
+        const nextY = widgets.reduce((max, current) => Math.max(max, current.y + current.h), 0);
         const widgetDefaults = getWidgetTypeDefaults(type, dataset);
 
-        const newWidget: Widget = {
+        const newWidget = normalizeCanvasWidgetLayout({
             id: Math.random().toString(36).substr(2, 9),
             type,
             xAxis: widgetDefaults.xAxis || '',
@@ -813,16 +870,16 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             showWidgetSubtitle: widgetDefaults.showWidgetSubtitle,
             showCardLabel: widgetDefaults.showCardLabel,
             cardValueSize: widgetDefaults.cardValueSize,
-            x,
-            y,
-            w: type === 'card' ? 1 : type === 'map' ? 2 : 1,
-            h: type === 'card' ? 2 : type === 'map' ? 3 : 3,
+            x: 0,
+            y: nextY,
+            w: defaultSize.w,
+            h: defaultSize.h,
             title: buildDefaultWidgetTitle({
                 type,
                 xAxis: widgetDefaults.xAxis || '',
                 yAxis: widgetDefaults.yAxis || ''
             })
-        };
+        });
         setWidgets([...widgets, newWidget]);
         setSelection({ type: 'widget', id: newWidget.id });
     };
@@ -838,7 +895,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             if (w.id === id) {
                 const updated = updates.type && updates.type !== w.type
                     ? sanitizeWidgetForType({ ...w, ...updates }, updates.type, dataset)
-                    : { ...w, ...updates };
+                    : normalizeCanvasWidgetLayout({ ...w, ...updates });
                 const titleRelevantUpdates = updates.type !== undefined
                     || updates.xAxis !== undefined
                     || updates.yAxis !== undefined
@@ -1450,19 +1507,43 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
         setGlobalFilters(globalFilters.map(f => f.id === id ? { ...f, value } : f));
     };
 
+    const inspectorExpandedWidth = 248;
+    const inspectorCollapsedWidth = 72;
+    const isInspectorDrawerOpen = isNarrowViewport && !isSidebarCollapsed;
+    const showInspectorContent = !isSidebarCollapsed;
+
     return (
-        <div style={{ display: 'flex', gap: '0', alignItems: 'stretch', minHeight: '100vh', marginLeft: '-18px', marginTop: '-18px' }}>
+        <div style={{ display: 'flex', gap: '0', alignItems: 'stretch', minHeight: '100vh', width: '100%', position: 'relative', background: 'var(--background)' }}>
+            {isInspectorDrawerOpen ? (
+                <button
+                    type="button"
+                    aria-label="Close inspector"
+                    onClick={() => setIsSidebarCollapsed(true)}
+                    style={{
+                        position: 'absolute',
+                        inset: 0,
+                        zIndex: 45,
+                        background: 'rgba(8, 12, 20, 0.36)',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer'
+                    }}
+                />
+            ) : null}
             {/* Sidebar: Data Fields & Visual Types */}
             <div className={`canvas-sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`} style={{
-                width: isSidebarCollapsed ? '80px' : '220px',
+                width: isSidebarCollapsed ? `${inspectorCollapsedWidth}px` : `${inspectorExpandedWidth}px`,
                 display: 'flex',
                 flexDirection: 'column',
-                position: 'sticky',
-                top: '0',
-                height: 'calc(100vh)',
+                position: isNarrowViewport ? 'absolute' : 'sticky',
+                left: 0,
+                top: 0,
+                height: '100vh',
                 overflow: 'hidden',
                 transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                zIndex: 50
+                zIndex: 50,
+                transform: isNarrowViewport ? (isSidebarCollapsed ? 'translateX(-104%)' : 'translateX(0)') : 'none',
+                boxShadow: isNarrowViewport && !isSidebarCollapsed ? '0 24px 60px rgba(3, 7, 18, 0.28)' : undefined
             }}>
                 <button
                     onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
@@ -1488,91 +1569,10 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                     {isSidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
                 </button>
 
-                {!isSidebarCollapsed ? (
+                {showInspectorContent ? (
                     <>
-                        {/* Sticky Save Section */}
-                        {user && (
-                            <div style={{
-                                padding: '24px 18px 18px',
-                                background: 'rgba(255,255,255,0.02)'
-                            }}>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '8px' }}>
-                                    <button
-                                        onClick={() => handleSave(false)}
-                                        disabled={isSaving || !dataset.id}
-                                        className="btn-primary"
-                                        style={{
-                                            width: '100%',
-                                            padding: '11px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            gap: '8px',
-                                            background: isSaving ? 'var(--surface)' : 'var(--primary)',
-                                            opacity: !dataset.id ? 0.5 : 1
-                                        }}
-                                    >
-                                        {isSaving ? (
-                                            <Loader2 size={18} className="animate-spin" />
-                                        ) : (
-                                            <Save size={18} />
-                                        )}
-                                        {isSaving ? t('common.loading') : (reportId ? t('canvas.save') : t('canvas.save_report'))}
-                                    </button>
-                                    {reportId && (
-                                        <button
-                                            onClick={() => handleSave(true)}
-                                            disabled={isSaving}
-                                            className="btn-secondary"
-                                            style={{
-                                                width: '100%',
-                                                padding: '9px',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                gap: '8px',
-                                                border: '1px solid var(--border)',
-                                                color: 'var(--text-muted)'
-                                            }}
-                                        >
-                                            <Save size={16} />
-                                            {t('canvas.save_as')}
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={() => setIsReportSettingsOpen(!isReportSettingsOpen)}
-                                        className="btn-secondary"
-                                        style={{
-                                            width: '100%',
-                                            padding: '9px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            gap: '8px',
-                                            border: isReportSettingsOpen ? '1px solid var(--primary)' : '1px solid var(--border)',
-                                            color: isReportSettingsOpen ? 'var(--primary)' : 'var(--text-muted)'
-                                        }}
-                                    >
-                                        <Settings size={18} />
-                                        {isReportSettingsOpen ? t('canvas.report_settings') : t('canvas.settings')}
-                                    </button>
-                                    {lastSaved && (
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-muted)', justifyContent: 'center' }}>
-                                            <CheckCircle2 size={12} color="#10b981" />
-                                            {t('canvas.saved_at')} {lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        </div>
-                                    )}
-                                    {!dataset.id && (
-                                        <p style={{ fontSize: '0.65rem', color: '#fbbf24', textAlign: 'center' }}>
-                                            ⚠️ {t('canvas.temporary_dataset')}
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-
                         {/* Scrollable Content Section */}
-                        <div style={{ padding: '18px 14px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                        <div style={{ padding: '20px 14px 18px', display: 'flex', flexDirection: 'column', gap: '24px', overflowY: 'auto', minHeight: 0 }}>
                             {isReportSettingsOpen ? (
                                 <div className="animate-in slide-in-from-left duration-300">
                                     <h4 style={{ marginBottom: '12px', fontSize: '0.84rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -1818,39 +1818,35 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                         </div>
                     </>
                 ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', marginTop: '48px', padding: '0 8px' }}>
-                        <button
-                            onClick={() => handleSave(false)}
-                            disabled={isSaving || !dataset.id}
-                            title="Save Report"
-                            style={{
-                                background: 'transparent',
-                                border: 'none',
-                                color: 'var(--primary)',
-                                cursor: 'pointer',
-                                marginBottom: '12px'
-                            }}
-                        >
-                            {isSaving ? <Loader2 size={24} className="animate-spin" /> : <Save size={24} />}
-                        </button>
-
-                        {(['bar', 'line', 'pie', 'area', 'treemap', 'table', 'card', 'map'] as ChartType[]).map((type) => {
-                            const iconMap = { bar: BarChart3, line: LineIcon, pie: PieIcon, area: ChartArea, table: TableIcon, treemap: TableCellsMerge, card: SquareStack, map: MapPinned };
-                            const Icon = (iconMap as any)[type];
-                            return (
-                                <button
-                                    key={type}
-                                    onClick={() => {
-                                        addWidget(type);
-                                        setIsSidebarCollapsed(false);
-                                    }}
-                                    title={type}
-                                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', transition: 'color 0.2s' }}
-                                >
-                                </button>
-                            );
-                        })}
-
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginTop: '56px', padding: '0 8px' }}>
+                        {[
+                            { id: 'visuals', icon: Layout, label: t('canvas.visualizations') },
+                            { id: 'fields', icon: Layers, label: t('canvas.fields') },
+                            { id: 'settings', icon: Settings, label: t('canvas.settings') }
+                        ].map((item) => (
+                            <button
+                                key={item.id}
+                                onClick={() => setIsSidebarCollapsed(false)}
+                                title={item.label}
+                                aria-label={item.label}
+                                style={{
+                                    width: '100%',
+                                    aspectRatio: '1 / 1',
+                                    background: 'transparent',
+                                    border: '1px solid transparent',
+                                    borderRadius: '10px',
+                                    color: 'var(--text-muted)',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'all 0.2s'
+                                }}
+                                className="inspector-rail-btn"
+                            >
+                                <item.icon size={18} />
+                            </button>
+                        ))}
                     </div>
                 )}
             </div>
@@ -1860,10 +1856,11 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 style={{
                     flex: 1,
                     position: 'relative',
-                    padding: '0 28px 28px',
-                    minHeight: 'calc(100vh - 36px)',
+                    padding: isNarrowViewport ? '0 16px 20px' : '0 24px 24px',
+                    minHeight: '100vh',
                     background: 'var(--background)',
-                    overflow: 'visible'
+                    overflow: 'visible',
+                    minWidth: 0
                 }}
             >
                 {/* Sticky Header Section */}
@@ -1871,26 +1868,110 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                     position: 'sticky',
                     top: 0,
                     zIndex: 100,
-                    background: 'rgba(10, 10, 15, 0.8)', // Dark background matching the theme
+                    background: 'color-mix(in srgb, var(--background) 78%, transparent)',
                     backdropFilter: 'blur(12px)',
-                    padding: '28px 0 16px',
+                    WebkitBackdropFilter: 'blur(12px)',
+                    padding: isNarrowViewport ? '18px 0 14px' : '22px 0 16px',
                     margin: '0 0 18px'
                 }}>
                     {/* Header with Report Name */}
-                    <div style={{ marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
                         <div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', color: 'var(--primary)' }}>
                                 <SphereIcon size={16} />
                                 <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{t('sidebar.reports')}</span>
                             </div>
                             <h2 style={{ fontSize: '1.55rem', fontWeight: 700 }}>{reportName}</h2>
+                            {!dataset.id && (
+                                <p style={{ marginTop: '8px', fontSize: '0.72rem', color: '#fbbf24' }}>
+                                    ⚠️ {t('canvas.temporary_dataset')}
+                                </p>
+                            )}
                         </div>
-                        {hasUnsavedChanges && (
-                            <div style={{ padding: '6px 12px', background: 'rgba(251, 191, 36, 0.1)', border: '1px solid rgba(251, 191, 36, 0.2)', borderRadius: '20px', fontSize: '0.75rem', color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fbbf24' }} />
-                                Cambios sin guardar
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '10px', flexWrap: 'wrap', marginLeft: 'auto' }}>
+                            <button
+                                onClick={() => setIsSidebarCollapsed(prev => !prev)}
+                                className="btn-secondary"
+                                style={{
+                                    padding: '10px 14px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    border: '1px solid var(--border)',
+                                    color: showInspectorContent ? 'var(--foreground)' : 'var(--text-muted)',
+                                    background: showInspectorContent ? 'var(--surface-hover)' : 'var(--surface-light)'
+                                }}
+                            >
+                                <LayoutPanelLeft size={16} />
+                                {!isNarrowViewport ? 'Inspector' : (showInspectorContent ? 'Ocultar inspector' : 'Inspector')}
+                            </button>
+                            <button
+                                onClick={() => setIsReportSettingsOpen(!isReportSettingsOpen)}
+                                className="btn-secondary"
+                                style={{
+                                    padding: '10px 14px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    border: isReportSettingsOpen ? '1px solid var(--primary)' : '1px solid var(--border)',
+                                    color: isReportSettingsOpen ? 'var(--primary)' : 'var(--text-muted)'
+                                }}
+                            >
+                                <Settings size={16} />
+                                {t('canvas.settings')}
+                            </button>
+                            {reportId ? (
+                                <button
+                                    onClick={() => handleSave(true)}
+                                    disabled={isSaving}
+                                    className="btn-secondary"
+                                    style={{
+                                        padding: '10px 14px',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '8px',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-muted)'
+                                    }}
+                                >
+                                    <Save size={16} />
+                                    {t('canvas.save_as')}
+                                </button>
+                            ) : null}
+                            <button
+                                onClick={() => handleSave(false)}
+                                disabled={isSaving || !dataset.id}
+                                className="btn-primary"
+                                style={{
+                                    padding: '10px 16px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    opacity: !dataset.id ? 0.5 : 1
+                                }}
+                            >
+                                {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                                {isSaving ? t('common.loading') : (reportId ? t('canvas.save') : t('canvas.save_report'))}
+                            </button>
+                            <div style={{
+                                padding: hasUnsavedChanges ? '7px 12px' : '7px 10px',
+                                background: hasUnsavedChanges ? 'rgba(251, 191, 36, 0.1)' : 'rgba(16, 185, 129, 0.08)',
+                                border: hasUnsavedChanges ? '1px solid rgba(251, 191, 36, 0.2)' : '1px solid rgba(16, 185, 129, 0.18)',
+                                borderRadius: '999px',
+                                fontSize: '0.75rem',
+                                color: hasUnsavedChanges ? '#fbbf24' : '#10b981',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                            }}>
+                                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: hasUnsavedChanges ? '#fbbf24' : '#10b981' }} />
+                                {hasUnsavedChanges
+                                    ? 'Cambios sin guardar'
+                                    : lastSaved
+                                        ? `${t('canvas.saved_at')} ${lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                                        : 'Listo'}
                             </div>
-                        )}
+                        </div>
                     </div>
 
                     {/* Global Filters Bar */}
@@ -1982,15 +2063,18 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                 <ResponsiveGridLayoutComponent
                                     className="layout"
                                     layouts={{ lg: layout }}
-                                    breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-                                    cols={{ lg: 3, md: 3, sm: 2, xs: 1, xxs: 1 }}
-                                    rowHeight={150}
+                                    breakpoints={REPORT_EDITOR_GRID_BREAKPOINTS}
+                                    cols={REPORT_EDITOR_GRID_COLS}
+                                    rowHeight={REPORT_EDITOR_GRID_ROW_HEIGHT}
                                     width={width}
-                                    margin={[24, 24]}
+                                    margin={REPORT_EDITOR_GRID_MARGIN}
                                     containerPadding={[0, 0]}
                                     onLayoutChange={onLayoutChange}
                                     draggableHandle=".glass-card"
                                     useCSSTransforms={true}
+                                    compactType={REPORT_EDITOR_GRID_COMPACT_TYPE}
+                                    preventCollision={false}
+                                    allowOverlap={false}
                                 >
                                     {widgets.map((widget) => (
                                         <div key={widget.id} onClick={(e) => { e.stopPropagation(); setSelection({ type: 'widget', id: widget.id }); }}>
@@ -2000,6 +2084,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                 globalFilters={globalFilters}
                                                 columnsMeta={dataset.columns}
                                                 datasetId={dataset.id}
+                                                template={activeTemplate}
                                                 onSelect={() => setSelection({ type: 'widget', id: widget.id })}
                                                 onRemove={(e) => removeWidget(widget.id, e)}
                                             />

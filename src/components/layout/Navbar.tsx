@@ -3,10 +3,11 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { Layers, LogOut, User as UserIcon } from 'lucide-react';
+import { LogOut, User as UserIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Auth from '../auth/Auth';
 import { User } from '@supabase/supabase-js';
+import SphereLogo from '@/components/brand/SphereLogo';
 
 export default function Navbar() {
     const [user, setUser] = useState<User | null>(null);
@@ -41,21 +42,7 @@ export default function Navbar() {
             zIndex: 100
         }}>
             <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{
-                    background: 'var(--primary)',
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    boxShadow: '0 0 15px var(--primary-glow)'
-                }}>
-                    <Layers size={18} color="white" />
-                </div>
-                <span style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.03em' }}>
-                    Sphere
-                </span>
+                <SphereLogo width={130} height={32} />
             </Link>
 
             <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>

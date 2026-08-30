@@ -131,9 +131,10 @@ export async function getPublishedSnapshotByReportId(reportId: string) {
 }
 
 export async function revokePublishedSnapshot(slug: string) {
+  const now = new Date().toISOString();
   const { error } = await supabase
     .from('public_report_snapshots')
-    .update({ revoked_at: new Date().toISOString() })
+    .update({ revoked_at: now, updated_at: now })
     .eq('slug', slug);
 
   if (error) {

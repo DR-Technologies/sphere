@@ -1,5 +1,5 @@
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type LogCategory = 'config' | 'ingestion' | 'analytics' | 'auth' | 'maps' | 'render' | 'release';
+type LogCategory = 'config' | 'ingestion' | 'analytics' | 'auth' | 'maps' | 'render' | 'release' | 'story';
 
 interface LogOptions {
     once?: boolean;

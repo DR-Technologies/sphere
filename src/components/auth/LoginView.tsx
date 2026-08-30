@@ -4,6 +4,7 @@ import React from 'react';
 import Auth from './Auth';
 import { motion } from 'framer-motion';
 import { useTranslation } from '@/lib/i18n/LanguageContext';
+import SphereLogo from '@/components/brand/SphereLogo';
 
 export default function LoginView() {
     const { t } = useTranslation();
@@ -19,8 +20,7 @@ export default function LoginView() {
                 className="login-card glass-card"
             >
                 <div className="logo-section">
-                    <div className="logo-orb-large"></div>
-                    <h1 className="logo-text-large">Sphere</h1>
+                    <SphereLogo width={240} height={60} />
                 </div>
 
                 <div className="content-section">
@@ -48,10 +48,7 @@ export default function LoginView() {
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    background:
-                        radial-gradient(circle at top left, rgba(143, 180, 255, 0.2), transparent 28%),
-                        radial-gradient(circle at bottom right, rgba(157, 244, 255, 0.18), transparent 26%),
-                        linear-gradient(180deg, #0d1729 0%, #08111f 100%);
+                    background: var(--background);
                     overflow: hidden;
                     position: relative;
                     padding: 24px;
@@ -79,41 +76,12 @@ export default function LoginView() {
                     align-items: center;
                     text-align: center;
                     z-index: 10;
-                    border: 1px solid rgba(255, 255, 255, 0.18);
-                    box-shadow: 0 28px 80px rgba(7, 15, 29, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+                    border: 1px solid var(--border);
+                    box-shadow: var(--shadow-soft);
                 }
 
-                .logo-orb-large {
-                    width: 80px;
-                    height: 80px;
-                    background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.22) 30%, transparent 32%), linear-gradient(135deg, var(--primary), var(--secondary));
-                    border-radius: 50%;
-                    box-shadow: 0 24px 50px var(--primary-glow), inset 0 1px 0 rgba(255, 255, 255, 0.38);
-                    margin-bottom: 24px;
-                    position: relative;
-                    animation: floatOrb 6s ease-in-out infinite;
-                }
-
-                .logo-orb-large::after {
-                    content: '';
-                    position: absolute;
-                    top: 10px;
-                    left: 10px;
-                    width: 20px;
-                    height: 20px;
-                    background: rgba(255, 255, 255, 0.3);
-                    border-radius: 50%;
-                    filter: blur(2px);
-                }
-
-                .logo-text-large {
-                    font-size: 3rem;
-                    font-weight: 800;
-                    letter-spacing: -0.06em;
+                .logo-section {
                     margin-bottom: 32px;
-                    background: linear-gradient(to right, #ffffff, #d8e6ff);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
                 }
 
                 .content-section {
@@ -124,7 +92,7 @@ export default function LoginView() {
                     font-size: 1.5rem;
                     font-weight: 600;
                     margin-bottom: 12px;
-                    color: #fff;
+                    color: var(--text-primary);
                 }
 
                 .welcome-subtext {
@@ -149,19 +117,15 @@ export default function LoginView() {
 
                 .feature-dot {
                     padding: 6px 14px;
-                    background: rgba(255, 255, 255, 0.08);
-                    border: 1px solid rgba(255, 255, 255, 0.14);
+                    background: var(--surface-light);
+                    border: 1px solid var(--border);
                     border-radius: 999px;
                     font-size: 0.75rem;
-                    color: #e6eefc;
+                    color: var(--text-primary);
                     font-weight: 600;
-                    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+                    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
                 }
 
-                @keyframes floatOrb {
-                    0%, 100% { transform: translateY(0px); }
-                    50% { transform: translateY(-6px); }
-                }
             `}</style>
         </div>
     );

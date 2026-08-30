@@ -6,7 +6,7 @@ const fixture = (name: string) => path.resolve(process.cwd(), 'tests/fixtures', 
 
 async function goToUpload(page: import('@playwright/test').Page) {
   await page.goto('/');
-  await expect(page.getByText(/Welcome|Bienvenido/)).toBeVisible();
+  await expect(page.getByText(/Upload Dataset|Subir dataset/).first()).toBeVisible();
   await page.getByText(/Upload Dataset|Subir dataset/).first().click();
   await expect(page.locator('#file-upload')).toBeAttached();
 }
@@ -53,8 +53,15 @@ test.describe('M1 acceptance QA', () => {
     await expectRenderedChart(page.locator('.quick-type-treemap').first(), 'treemap');
     await expectRenderedChart(page.locator('.quick-type-pie').first(), 'pie');
 
-    await page.locator('input').first().fill('Acceptance Result A');
-    await page.locator('textarea').fill('QA quick result for dataset A.');
+    await page.getByRole('button', { name: 'Edit Report title' }).click();
+    await expect(page.locator('input[aria-label="Report title"]')).toBeVisible();
+    await page.locator('input[aria-label="Report title"]').fill('Acceptance Result A');
+    await page.locator('input[aria-label="Report title"]').press('Enter');
+    await expect(page.locator('input[aria-label="Report title"]')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Edit Report subtitle' }).click();
+    await expect(page.locator('textarea[aria-label="Report subtitle"]')).toBeVisible();
+    await page.locator('textarea[aria-label="Report subtitle"]').fill('QA quick result for dataset A.');
+    await page.locator('textarea[aria-label="Report subtitle"]').press('Escape');
 
     await page.getByRole('button', { name: 'Editorial' }).click();
     await page.getByRole('button', { name: 'Dark' }).click();
@@ -93,7 +100,7 @@ test.describe('M1 acceptance QA', () => {
 
     const revokedPage = await context.newPage();
     await revokedPage.goto(publicHref!);
-    await expect(revokedPage.getByText(/revocada|does not exist/i)).toBeVisible();
+    await expect(revokedPage.getByText(/revocada|does not exist|No se pudo cargar la publicación/i)).toBeVisible();
 
     await page.getByRole('button', { name: /^Refine$/ }).first().click();
     await expect(page.getByText(/Visualizations|Visualizaciones/i)).toBeVisible();

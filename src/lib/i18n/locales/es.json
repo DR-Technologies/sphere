@@ -71,6 +71,10 @@
   },
   "settings": {
     "title": "Configuración",
+    "appearance": "Apariencia",
+    "select_theme": "Cambia entre el modo oscuro y claro. La selección se guardará automáticamente.",
+    "dark_mode": "Modo oscuro",
+    "light_mode": "Modo claro",
     "language": "Idioma de la interfaz",
     "select_language": "Cambia el idioma de la interfaz. La selección se guardará automáticamente.",
     "english": "English",

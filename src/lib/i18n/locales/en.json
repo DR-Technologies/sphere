@@ -71,6 +71,10 @@
   },
   "settings": {
     "title": "Settings",
+    "appearance": "Appearance",
+    "select_theme": "Switch between dark and light mode. Your preference will be saved automatically.",
+    "dark_mode": "Dark mode",
+    "light_mode": "Light mode",
     "language": "Interface Language",
     "select_language": "Change the interface language. The selection will be saved automatically.",
     "english": "English",

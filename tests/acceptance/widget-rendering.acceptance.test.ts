@@ -192,6 +192,16 @@ async function evaluateDataset(datasetName: string, profile: DatasetProfileResul
   return results;
 }
 
+async function resolveWidgetResultForFixture(name: string, widget: import('@/lib/widgets/types').Widget, options?: { dateFormat?: 'AUTO' | 'DD/MM/YYYY' }) {
+  const profile = await profileFixture(name, options);
+  const normalizedRows = profile.artifacts?.normalizedRows || [];
+  setAnalyticsProvider(withMockProvider(normalizedRows));
+  const built = buildWidgetQueryModel(widget, profile.columns, []);
+  expect(built.model, `Widget ${widget.title} should have a valid query model`).toBeTruthy();
+  const result = await resolveWidgetVisualizationResult(built.model!, profile.columns, 'acceptance-dataset');
+  return { result, profile };
+}
+
 afterEach(() => {
   setAnalyticsProvider(supabaseAnalyticsProvider);
 });
@@ -216,5 +226,51 @@ describe('widget rendering acceptance', () => {
     const results = await evaluateDataset('dataset-c-visual.csv', profile);
     console.table(results);
     expect(results.filter((result) => result.type !== 'table').every((result) => result.renderStatus === 'PASS')).toBe(true);
+  });
+
+  it('aggregates treemap, bar, and pie consistently for contract hours by contract name', async () => {
+    const baseWidget = {
+      xAxis: 'Nombre Contrato',
+      yAxis: 'Horas',
+      aggregation: 'SUM' as const,
+      x: 0,
+      y: 0,
+      w: 6,
+      h: 3
+    };
+
+    const bar = await resolveWidgetResultForFixture('export-horas-contrato.csv', {
+      id: 'bar-contract-hours',
+      type: 'bar',
+      title: 'Horas por Nombre Contrato',
+      ...baseWidget
+    }, { dateFormat: 'DD/MM/YYYY' });
+
+    const pie = await resolveWidgetResultForFixture('export-horas-contrato.csv', {
+      id: 'pie-contract-hours',
+      type: 'pie',
+      title: 'Participación de Horas',
+      ...baseWidget,
+      topN: 8
+    }, { dateFormat: 'DD/MM/YYYY' });
+
+    const treemap = await resolveWidgetResultForFixture('export-horas-contrato.csv', {
+      id: 'treemap-contract-hours',
+      type: 'treemap',
+      title: 'Nombre Contrato por Horas',
+      ...baseWidget
+    }, { dateFormat: 'DD/MM/YYYY' });
+
+    const expectedRows = [
+      { 'Nombre Contrato': 'Proyectos', Horas: 100 },
+      { 'Nombre Contrato': 'Soporte', Horas: 56 }
+    ].sort((left, right) => String(left['Nombre Contrato']).localeCompare(String(right['Nombre Contrato'])));
+
+    const sortRows = (rows: Array<Record<string, unknown>>) =>
+      [...rows].sort((left, right) => String(left['Nombre Contrato']).localeCompare(String(right['Nombre Contrato'])));
+
+    expect(sortRows(bar.result.rows)).toEqual(expectedRows);
+    expect(sortRows(pie.result.rows)).toEqual(expectedRows);
+    expect(sortRows(treemap.result.rows)).toEqual(expectedRows);
   });
 });

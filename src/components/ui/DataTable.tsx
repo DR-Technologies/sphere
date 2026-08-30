@@ -6,7 +6,7 @@ import { formatDate } from '@/lib/dateUtils';
 
 interface DataTableProps {
     columns: { name: string; type: string }[];
-    data: Record<string, any>[];
+    data: Record<string, unknown>[];
     maxRows?: number;
 }
 
@@ -31,9 +31,11 @@ export default function DataTable({ columns, data, maxRows = 100 }: DataTablePro
             processData.sort((a, b) => {
                 const aVal = a[sortConfig.key];
                 const bVal = b[sortConfig.key];
+                const aComparable = aVal == null ? '' : String(aVal);
+                const bComparable = bVal == null ? '' : String(bVal);
 
-                if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-                if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+                if (aComparable < bComparable) return sortConfig.direction === 'asc' ? -1 : 1;
+                if (aComparable > bComparable) return sortConfig.direction === 'asc' ? 1 : -1;
                 return 0;
             });
         }
@@ -66,7 +68,7 @@ export default function DataTable({ columns, data, maxRows = 100 }: DataTablePro
                         padding: '10px 12px 10px 40px',
                         background: 'var(--surface)',
                         border: '1px solid var(--border)',
-                        borderRadius: '10px',
+                        borderRadius: '8px',
                         color: 'var(--foreground)',
                         fontSize: '0.875rem',
                         outline: 'none',
@@ -77,7 +79,7 @@ export default function DataTable({ columns, data, maxRows = 100 }: DataTablePro
                 />
             </div>
 
-            <div className="glass" style={{ borderRadius: '16px', overflow: 'hidden' }}>
+            <div className="glass" style={{ borderRadius: '12px', overflow: 'hidden' }}>
                 <div style={{ overflowX: 'auto', maxHeight: '500px' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.875rem' }}>
                         <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>

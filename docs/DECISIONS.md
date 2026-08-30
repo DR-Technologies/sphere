@@ -116,3 +116,75 @@
 - **Reason:** el activo exportado debe sentirse listo para compartir, no como una captura técnica parcial del canvas.
 - **Consequences:** la exportación usa un frame editorial dedicado y oculta controles de edición durante la captura.
 - **Status:** `ACCEPTED`
+
+## 20. Story es una entidad independiente con referencia opcional al reporte
+- **Decision:** `Story` se modela como entidad independiente y puede conservar `sourceReportId?` únicamente como referencia opcional al origen.
+- **Reason:** una Story puede nacer desde Quick Result o desde un Report, pero no debe dejar de funcionar si ese Report luego cambia o desaparece.
+- **Consequences:** la persistencia y publicación de Story se diseñan alrededor de `StoryDefinition`, no de la vida útil del reporte fuente.
+- **Status:** `ACCEPTED`
+
+## 21. Los contratos de Story quedan separados por definición, materialización y playback
+- **Decision:** M2 separa explícitamente `StoryDefinition`, `MaterializedStory` y `PlaybackState`.
+- **Reason:** evita mezclar lo que el usuario creó, lo que el sistema resolvió para reproducir y lo que se deriva en runtime desde el tiempo.
+- **Consequences:** los contratos de Story no persisten estado efímero ni datos de render calculados en tiempo de ejecución.
+- **Status:** `ACCEPTED`
+
+## 22. SceneDefinition no depende rígidamente de Widget ni de Recharts
+- **Decision:** una `SceneDefinition` puede conservar referencias livianas como `sourceWidgetId`, pero no persistirá un `Widget` completo ni dependerá conceptualmente de `Recharts`.
+- **Reason:** el player, la URL pública y el export MP4 necesitan un contrato estable y agnóstico al renderer concreto.
+- **Consequences:** la comunicación con el renderer pasa por `VisualizationRenderModel` y `SceneRenderModel`.
+- **Status:** `ACCEPTED`
+
+## 23. Playback usa tiempo global como fuente de verdad
+- **Decision:** el playback de Story se deriva de `global time -> active scene -> local progress`.
+- **Reason:** se necesita coherencia entre preview web, publicación pública y render de video.
+- **Consequences:** `pause`, `seek`, fases `enter/main/exit`, transiciones y frame rendering se diseñan de forma determinística.
+- **Status:** `ACCEPTED`
+
+## 24. MP4 se renderiza server-side mediante arquitectura híbrida
+- **Decision:** la arquitectura objetivo para MP4 es híbrida: `Story Definition / Snapshot -> Playback Engine -> Shared Presentation Renderer -> Headless Browser -> Frames -> Native FFmpeg -> MP4`.
+- **Reason:** `ffmpeg.wasm` no ofrece el mejor equilibrio para 1080p, consistencia visual y escalabilidad operativa.
+- **Consequences:** el export será asíncrono desde el inicio y la previsualización web compartirá el mismo modelo temporal y de render con el video.
+- **Status:** `ACCEPTED`
+
+## 25. Public Story no tendrá autoplay por defecto en M2
+- **Decision:** la URL pública de Story mostrará el estado inicial y una acción explícita de `Play`.
+- **Reason:** reduce fricción contextual, evita comportamientos intrusivos y simplifica la primera versión pública.
+- **Consequences:** el player público debe estar preparado para autoplay futuro, pero no activarlo en M2.
+- **Status:** `ACCEPTED`
+
+## 26. El orden de validación de Animated Charts reduce riesgo progresivamente
+- **Decision:** M2 valida primero `KPI Counter`, luego `Line Evolution`, después `Bar Ranking`, luego `Bar Chart Race` y finalmente `Composition Evolution`.
+- **Reason:** permite endurecer Playback y Render Contract con visualizaciones de menor riesgo antes de entrar a escenas temporalmente más complejas.
+- **Consequences:** `Bar Chart Race` y `Composition Evolution` permanecen dentro de M2, pero no son el primer frente de validación técnica.
+- **Status:** `ACCEPTED`
+
+## 27. Story persiste como documento versionado en una sola tabla principal
+- **Decision:** `stories` almacena columnas indexables para lectura operativa y un `story_definition` JSONB versionado como fuente de verdad persistida.
+- **Reason:** evita fragmentar M2 prematuramente en múltiples tablas por escena y mantiene compatibilidad futura mediante `definition_version`.
+- **Consequences:** guardar, reabrir y editar Story se apoyan en un contrato estable sin depender de `story_scenes`.
+- **Status:** `ACCEPTED`
+
+## 28. Public Story usa snapshot materializado independiente del dataset privado
+- **Decision:** la publicación de Story crea un registro en `public_story_snapshots` con `story_definition` y `materialized_story`.
+- **Reason:** el player público debe funcionar sin consultar datasets privados ni recalcular consultas analíticas en tiempo real.
+- **Consequences:** `publish`, `republish` y `unpublish` operan sobre snapshots públicos revocables y la URL pública consume exclusivamente ese artefacto.
+- **Status:** `ACCEPTED`
+
+## 29. El player público reutiliza playback y renderer compartidos
+- **Decision:** `/story/[slug]` reutiliza el mismo `Playback Engine`, `Scene Render Model` y `Presentation Renderer` del Story Studio.
+- **Reason:** evita divergencia visual y reduce el riesgo de mantener dos implementaciones narrativas distintas.
+- **Consequences:** browser preview, URL pública y video se mantienen alineados sobre la misma cadena temporal y de render.
+- **Status:** `ACCEPTED`
+
+## 30. El export MP4 es asíncrono desde su primera versión productiva
+- **Decision:** el usuario solicita `Export Video` y el sistema crea un `story_export_job` con estados `queued`, `processing`, `completed` o `failed`.
+- **Reason:** un render de video no debe depender de una request HTTP larga ni bloquear la UI hasta terminar.
+- **Consequences:** Story Studio muestra progreso y descarga posterior; la implementación actual puede ser serial/simple, pero el contrato ya permite evolucionar hacia workers dedicados.
+- **Status:** `ACCEPTED`
+
+## 31. El modo mock de export existe solo para acceptance QA
+- **Decision:** `mockMode` completa el ciclo de export con un artefacto ligero determinístico en pruebas E2E, sin ejecutar Chromium + FFmpeg completos.
+- **Reason:** valida el lifecycle de `Export -> Processing -> Completed -> Download` sin volver frágil ni lenta la suite end-to-end.
+- **Consequences:** el producto real sigue usando el pipeline productivo; el atajo vive únicamente detrás de la bandera de pruebas.
+- **Status:** `ACCEPTED`

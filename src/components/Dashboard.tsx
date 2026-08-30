@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 
 import {
     getDatasets, uploadDatasetAssets, saveDataset, SavedDataset, syncNormalizedDataset,
-    getReports, SavedReport, deleteDataset, updateReportName,
+    getReports, SavedReport, deleteDataset, updateReportName, getDatasetById,
     checkDatasetLimit, deleteReport
 } from '@/lib/persistence';
 import { profileFile, profileFromUrl, getExcelSheetNames } from '@/lib/profiler';
@@ -17,32 +17,36 @@ import FileDropzone from '@/components/upload/FileDropzone';
 import DataTable from '@/components/ui/DataTable';
 import ReportCanvas from './canvas/ReportCanvas';
 import QuickResultView from './quick-result/QuickResultView';
+import StoryStudio from './story/StoryStudio';
 import LoginView from './auth/LoginView';
+import SphereLogo from './brand/SphereLogo';
 import ThreeDotMenu from './ui/ThreeDotMenu';
-import { ArrowRight, Activity as SphereIcon, Database, FileText, Plus, Edit2, ExternalLink, Trash2, Hash, ALargeSmall, Calendar } from 'lucide-react';
+import { ArrowRight, Activity as SphereIcon, Database, FileText, Plus, Edit2, ExternalLink, Trash2, Hash, ALargeSmall, Calendar, Clapperboard } from 'lucide-react';
 import { LanguageProvider, useTranslation } from '@/lib/i18n/LanguageContext';
 import SettingsView from './layout/SettingsView';
 import { formatDate } from '@/lib/dateUtils';
 import { buildQuickResultRecommendation } from '@/lib/quickResult/recommendation';
 import type { ReportPresentation, Widget } from '@/lib/widgets/types';
+import { deleteStory, getStories, type SavedStoryRecord } from '@/lib/story/persistence';
 
 type ViewState = 'home' | 'datasets' | 'upload' | 'reports' | 'settings';
 
 function DashboardContent() {
     const { t } = useTranslation();
     const [activeView, setActiveView] = useState<ViewState>('home');
-    const [step, setStep] = useState<'main' | 'profiling' | 'quick' | 'canvas'>('main');
+    const [step, setStep] = useState<'main' | 'profiling' | 'quick' | 'canvas' | 'story'>('main');
     const [dataset, setDataset] = useState<any>(null);
     const [isProfiling, setIsProfiling] = useState(false);
     const [user, setUser] = useState<User | null | undefined>(undefined);
     const [savedDatasets, setSavedDatasets] = useState<SavedDataset[]>([]);
     const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
+    const [savedStories, setSavedStories] = useState<SavedStoryRecord[]>([]);
     const [isLoadingSaved, setIsLoadingSaved] = useState(false);
     const [previewView, setPreviewView] = useState<'stats' | 'preview'>('preview');
     const [initialReportId, setInitialReportId] = useState<string | null>(null);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
-    const [pendingNavigation, setPendingNavigation] = useState<{ view?: ViewState, step?: 'main' | 'profiling' | 'canvas' } | null>(null);
+    const [pendingNavigation, setPendingNavigation] = useState<{ view?: ViewState, step?: 'main' | 'profiling' | 'canvas' | 'story' } | null>(null);
     const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
     const [pendingImportFormat, setPendingImportFormat] = useState<string>('');
     const [availableSheets, setAvailableSheets] = useState<string[]>([]);
@@ -53,6 +57,7 @@ function DashboardContent() {
     const [dateFormat, setDateFormat] = useState<DateInputFormat>('AUTO');
     const [quickResultWidgets, setQuickResultWidgets] = useState<Widget[]>([]);
     const [quickResultPresentation, setQuickResultPresentation] = useState<ReportPresentation | null>(null);
+    const [initialStory, setInitialStory] = useState<import('@/lib/story/types').StoryDefinition | null>(null);
     const canvasRef = React.useRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string } | null>(null);
 
     const handleViewChange = (view: ViewState) => {
@@ -64,6 +69,7 @@ function DashboardContent() {
         setActiveView(view);
         setStep('main');
         setInitialReportId(null);
+        setInitialStory(null);
     };
 
     const confirmNavigation = (action: 'save' | 'saveAs' | 'discard' | 'cancel') => {
@@ -103,13 +109,46 @@ function DashboardContent() {
             // Default to 'main' step if not specified, crucial for exiting canvas
             setStep(pendingNavigation.step || 'main');
             setInitialReportId(null);
+            setInitialStory(null);
         } else {
             setStep('main');
             setInitialReportId(null);
+            setInitialStory(null);
         }
         setShowConfirmModal(false);
         setPendingNavigation(null);
     };
+
+    const fetchSavedDatasets = useCallback(async (userId?: string) => {
+        const uid = userId || user?.id;
+        if (!uid) return;
+        setIsLoadingSaved(true);
+        const data = await getDatasets(uid);
+        setSavedDatasets(data);
+        setIsLoadingSaved(false);
+    }, [user?.id]);
+
+    const fetchSavedReports = useCallback(async (userId?: string) => {
+        const uid = userId || user?.id;
+        if (!uid) return;
+        const data = await getReports(uid);
+        setSavedReports(data);
+    }, [user?.id]);
+
+    const fetchSavedStories = useCallback(async (userId?: string) => {
+        const uid = userId || user?.id;
+        if (!uid) return;
+        const data = await getStories(uid);
+        setSavedStories(data);
+    }, [user?.id]);
+
+    const handleStorySaved = useCallback(() => {
+        if (user) void fetchSavedStories(user.id);
+    }, [fetchSavedStories, user]);
+
+    const handleStoryDeleted = useCallback(() => {
+        if (user) void fetchSavedStories(user.id);
+    }, [fetchSavedStories, user]);
 
     useEffect(() => {
         let isInitialFetch = true;
@@ -127,10 +166,12 @@ function DashboardContent() {
                 if (isInitialFetch || event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
                     fetchSavedDatasets(currentUser.id);
                     fetchSavedReports(currentUser.id);
+                    fetchSavedStories(currentUser.id);
                     isInitialFetch = false;
                 }
             } else if (event === 'INITIAL_SESSION' || event === 'SIGNED_OUT') {
                 setSavedDatasets([]);
+                setSavedStories([]);
                 // Wait a bit to ensure we didn't just miss a fast redirect
                 setTimeout(() => {
                     setUser(prev => prev === undefined ? null : prev);
@@ -139,23 +180,7 @@ function DashboardContent() {
         });
 
         return () => subscription.unsubscribe();
-    }, []);
-
-    const fetchSavedDatasets = async (userId?: string) => {
-        const uid = userId || user?.id;
-        if (!uid) return;
-        setIsLoadingSaved(true);
-        const data = await getDatasets(uid);
-        setSavedDatasets(data);
-        setIsLoadingSaved(false);
-    };
-
-    const fetchSavedReports = async (userId?: string) => {
-        const uid = userId || user?.id;
-        if (!uid) return;
-        const data = await getReports(uid);
-        setSavedReports(data);
-    };
+    }, [fetchSavedDatasets, fetchSavedReports, fetchSavedStories]);
 
     const handleLogout = async () => {
         await supabase.auth.signOut();
@@ -275,6 +300,7 @@ function DashboardContent() {
                     setDataset(nextDataset);
                     setQuickResultWidgets(recommendation.widgets);
                     setQuickResultPresentation(recommendation.presentation);
+                    setInitialStory(null);
                     setStep('quick');
                     fetchSavedDatasets(user.id);
                 }
@@ -304,6 +330,7 @@ function DashboardContent() {
             setDataset(nextDataset);
             setQuickResultWidgets(recommendation.widgets);
             setQuickResultPresentation(recommendation.presentation);
+            setInitialStory(null);
             setStep('quick');
         } catch (err) {
             appLogger.error('ingestion', 'LOAD_SAVED_DATASET_FAILED', 'Failed to load saved dataset.', { error: err, meta: { datasetId: saved.id } });
@@ -335,10 +362,43 @@ function DashboardContent() {
 
             // 2. Switch to canvas
             setInitialReportId(report.id);
+            setInitialStory(null);
             setStep('canvas');
         } catch (err) {
             appLogger.error('analytics', 'LOAD_SAVED_REPORT_FAILED', 'Failed to load saved report.', { error: err, meta: { reportId: report.id } });
             alert('Fallo al cargar el reporte.');
+            setStep('main');
+        } finally {
+            setIsProfiling(false);
+        }
+    };
+
+    const handleLoadSavedStory = async (savedStory: SavedStoryRecord) => {
+        setIsProfiling(true);
+        setStep('profiling');
+        try {
+            let ds: SavedDataset | undefined = savedDatasets.find((item: SavedDataset) => item.id === savedStory.datasetId);
+            if (!ds) {
+                const fetched = await getDatasetById(savedStory.datasetId);
+                ds = fetched || undefined;
+            }
+            if (!ds) throw new Error('Dataset no encontrado para esta Story.');
+
+            const profile = await profileFromUrl(ds.file_url, ds.name, ds.sheet_name, {
+                normalizedFileUrl: ds.normalized_file_url,
+                analyticsManifestUrl: ds.analytics_manifest_url
+            });
+            const syncedDataset = await ensureDatasetAnalyticsTable(ds, profile);
+            setDataset({ id: syncedDataset.id, name: syncedDataset.name, ...profile });
+            setInitialReportId(savedStory.sourceReportId || null);
+            setInitialStory(savedStory.storyDefinition);
+            setStep('story');
+        } catch (err) {
+            appLogger.error('story', 'LOAD_SAVED_STORY_FAILED', 'Failed to load saved story.', {
+                error: err,
+                meta: { storyId: savedStory.id }
+            });
+            alert('No pudimos abrir la Story.');
             setStep('main');
         } finally {
             setIsProfiling(false);
@@ -403,6 +463,17 @@ function DashboardContent() {
         }
     };
 
+    const handleDeleteStory = async (storyId: string) => {
+        if (confirm('¿Estás seguro de que deseas eliminar esta Story?')) {
+            try {
+                if (user) await deleteStory(storyId, user.id);
+                if (user) fetchSavedStories(user.id);
+            } catch {
+                alert('Error al eliminar la Story.');
+            }
+        }
+    };
+
     const handleRenameReport = async (report: SavedReport) => {
         const newName = prompt('Nuevo nombre para el reporte:', report.name);
         if (newName && newName.trim() !== '' && newName !== report.name) {
@@ -419,16 +490,11 @@ function DashboardContent() {
         return (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: 'var(--background)' }}>
                 <div className="animate-pulse" style={{ color: 'var(--primary)', textAlign: 'center' }}>
-                    <div className="logo-orb" style={{ width: '40px', height: '40px', margin: '0 auto 16px' }}></div>
+                    <div style={{ width: '40px', height: '40px', margin: '0 auto 16px' }}>
+                        <SphereLogo compact width={40} height={40} />
+                    </div>
                     <p>Preparando tu espacio...</p>
                 </div>
-                <style jsx>{`
-                    .logo-orb {
-                        background: linear-gradient(135deg, var(--primary), var(--secondary));
-                        border-radius: 50%;
-                        box-shadow: 0 0 20px var(--primary-glow);
-                    }
-                `}</style>
             </div>
         );
     }
@@ -470,6 +536,36 @@ function DashboardContent() {
                         setInitialReportId(reportId || null);
                         setStep('canvas');
                     }}
+                    onCreateStory={({ widgets, presentation, reportId }) => {
+                        setQuickResultWidgets(widgets);
+                        setQuickResultPresentation(presentation);
+                        setInitialReportId(reportId || null);
+                        setInitialStory(null);
+                        setStep('story');
+                    }}
+                />
+            );
+        }
+
+        if (step === 'story' && dataset && user) {
+            return (
+                <StoryStudio
+                    dataset={dataset as any}
+                    widgets={quickResultWidgets}
+                    presentation={quickResultPresentation}
+                    userId={user.id}
+                    sourceReportId={initialReportId}
+                    initialStory={initialStory}
+                    onBack={() => {
+                        if (initialStory) {
+                            setStep('main');
+                            setActiveView('reports');
+                            return;
+                        }
+                        setStep('quick');
+                    }}
+                    onStorySaved={handleStorySaved}
+                    onStoryDeleted={handleStoryDeleted}
                 />
             );
         }
@@ -606,7 +702,7 @@ function DashboardContent() {
                             background: rgba(255, 255, 255, 0.1);
                             color: #fff;
                             padding: 8px;
-                            border-radius: 14px;
+                            border-radius: 10px;
                             display: flex;
                             align-items: center;
                             justify-content: center;
@@ -615,7 +711,7 @@ function DashboardContent() {
                         .stat-item {
                             padding: 12px;
                             background: rgba(255, 255, 255, 0.06);
-                            border-radius: 18px;
+                            border-radius: 12px;
                             border: 1px solid rgba(255, 255, 255, 0.12);
                         }
                         .stat-label { 
@@ -692,8 +788,8 @@ function DashboardContent() {
                                 cursor: pointer;
                                 transition: all 0.28s ease;
                             }
-                            .action-card:hover { transform: translateY(-4px); border-color: rgba(255, 255, 255, 0.24); }
-                            .card-icon { color: #fff; }
+                            .action-card:hover { transform: translateY(-4px); border-color: var(--shell-active-border); background: var(--surface-hover); }
+                            .card-icon { color: var(--text-primary); }
                             .ds-card {
                                 padding: 16px;
                                 display: flex;
@@ -701,7 +797,7 @@ function DashboardContent() {
                                 gap: 16px;
                                 cursor: pointer;
                             }
-                            .ds-icon { background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 16px; color: #fff; border: 1px solid rgba(255,255,255,0.12); }
+                            .ds-icon { background: var(--surface-light); padding: 10px; border-radius: 12px; color: var(--text-primary); border: 1px solid var(--border); }
                             .ds-info h4 { font-size: 0.9375rem; margin: 0; }
                             .ds-info p { font-size: 0.8125rem; color: var(--text-muted); margin: 0; }
                         `}</style>
@@ -910,13 +1006,12 @@ function DashboardContent() {
                         </header>
 
                         {savedReports.length > 0 ? (
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px', marginBottom: '32px' }}>
                                 {savedReports.map(report => (
                                     <div
                                         key={report.id}
                                         className="glass-card report-item"
                                         onClick={(e) => {
-                                            // Only trigger if not clicking on the menu or its children
                                             if (!(e.target as HTMLElement).closest('.three-dot-menu')) {
                                                 handleLoadSavedReport(report);
                                             }
@@ -945,13 +1040,69 @@ function DashboardContent() {
                                 ))}
                             </div>
                         ) : (
-                            <div className="glass-card" style={{ padding: '60px', textAlign: 'center' }}>
-                                <SphereIcon size={48} color="var(--text-muted)" style={{ marginBottom: '16px' }} />
+                            <div className="glass-card" style={{ padding: '36px', textAlign: 'center', marginBottom: '28px' }}>
+                                <SphereIcon size={40} color="var(--text-muted)" style={{ marginBottom: '16px' }} />
                                 <h3>{t('dashboard.no_reports')}</h3>
                                 <p style={{ color: 'var(--text-muted)', marginTop: '8px' }}>{t('dashboard.no_reports_sub')}</p>
-                                <button className="btn-primary" style={{ marginTop: '24px' }} onClick={() => handleViewChange('upload')}>{t('dashboard.start_now')}</button>
                             </div>
                         )}
+
+                        <div style={{ display: 'grid', gap: '16px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '16px' }}>
+                                <div>
+                                    <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '6px' }}>Stories</h3>
+                                    <p style={{ color: 'var(--text-muted)', margin: 0 }}>Tus historias visuales guardadas y listas para publicar o exportar.</p>
+                                </div>
+                                <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', background: 'var(--surface)', padding: '4px 12px', borderRadius: '20px', border: '1px solid var(--border)' }}>
+                                    {savedStories.length} stories
+                                </div>
+                            </div>
+
+                            {savedStories.length > 0 ? (
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+                                    {savedStories.map(savedStory => (
+                                        <div
+                                            key={savedStory.id}
+                                            className="glass-card report-item"
+                                            onClick={(e) => {
+                                                if (!(e.target as HTMLElement).closest('.three-dot-menu')) {
+                                                    handleLoadSavedStory(savedStory);
+                                                }
+                                            }}
+                                        >
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                                <Clapperboard size={24} color="var(--primary)" />
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                        {formatDate(savedStory.updatedAt || savedStory.createdAt || new Date().toISOString())}
+                                                    </span>
+                                                    <ThreeDotMenu items={[
+                                                        { label: t('common.open'), icon: <ExternalLink size={16} />, onClick: () => handleLoadSavedStory(savedStory) },
+                                                        { label: t('common.delete'), icon: <Trash2 size={16} />, onClick: () => handleDeleteStory(savedStory.id), variant: 'danger' }
+                                                    ]} />
+                                                </div>
+                                            </div>
+                                            <h3 style={{ fontSize: '1.125rem', marginBottom: '8px' }}>{savedStory.title}</h3>
+                                            <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', lineHeight: 1.5 }}>
+                                                {savedStory.subtitle || 'Story visual lista para reproducir, publicar o exportar.'}
+                                            </p>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
+                                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                    {savedDatasets.find((d: SavedDataset) => d.id === savedStory.datasetId)?.name || 'Dataset asociado'}
+                                                </span>
+                                                <span className="badge-small">{savedStory.orientation === 'portrait' ? '9:16' : '16:9'}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="glass-card" style={{ padding: '32px', textAlign: 'center' }}>
+                                    <Clapperboard size={36} color="var(--text-muted)" style={{ marginBottom: '12px' }} />
+                                    <h3 style={{ marginBottom: '8px' }}>Aún no has creado Stories</h3>
+                                    <p style={{ color: 'var(--text-muted)' }}>Genera una Story desde Quick Result y aparecerá aquí para reabrirla.</p>
+                                </div>
+                            )}
+                        </div>
                         <style jsx>{`
                             .report-item { padding: 24px; cursor: pointer; transition: all 0.2s; position: relative; overflow: hidden; }
                             .report-item:hover { border-color: rgba(255, 255, 255, 0.24); transform: translateY(-4px); }
@@ -980,6 +1131,7 @@ function DashboardContent() {
             onViewChange={handleViewChange}
             onLogout={handleLogout}
             userName={user.user_metadata.full_name || user.email}
+            editorMode={step === 'canvas'}
         >
             {renderContent()}
 

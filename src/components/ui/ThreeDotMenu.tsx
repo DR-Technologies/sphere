@@ -146,7 +146,7 @@ export default function ThreeDotMenu({ items }: ThreeDotMenuProps) {
                     background: transparent;
                     border: none;
                     border-radius: 14px;
-                    color: rgba(241, 247, 255, 0.82);
+                    color: var(--foreground);
                     font-size: 0.875rem;
                     cursor: pointer;
                     transition: all 0.28s ease;

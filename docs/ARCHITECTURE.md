@@ -32,6 +32,12 @@
 13. El reporte se guarda en `reports`.
 14. La publicación crea un snapshot materializado en `public_report_snapshots`.
 15. Existe una vista pública por `/report/[id]`.
+16. Desde Quick Result el usuario puede crear una `Story`.
+17. La `Story` se persiste en `stories` mediante `story_definition` versionado.
+18. La reproducción privada usa `MaterializedStory -> Playback Engine -> Presentation Renderer`.
+19. La publicación crea snapshots en `public_story_snapshots`.
+20. La URL pública vive en `/story/[slug]`.
+21. El export de video crea `story_export_jobs` y usa un pipeline asíncrono con Chromium headless + FFmpeg nativo.
 
 ### Módulos clave actuales
 - [src/components/Dashboard.tsx](/Users/dayana/Source/sphere/src/components/Dashboard.tsx)
@@ -46,6 +52,17 @@
 - [src/lib/quickResult/layout.ts](/Users/dayana/Source/sphere/src/lib/quickResult/layout.ts)
 - [src/lib/publishing.ts](/Users/dayana/Source/sphere/src/lib/publishing.ts)
 - [src/lib/persistence.ts](/Users/dayana/Source/sphere/src/lib/persistence.ts)
+- [src/components/story/StoryStudio.tsx](/Users/dayana/Source/sphere/src/components/story/StoryStudio.tsx)
+- [src/components/story/StoryFrameView.tsx](/Users/dayana/Source/sphere/src/components/story/StoryFrameView.tsx)
+- [src/components/story/PresentationRenderer.tsx](/Users/dayana/Source/sphere/src/components/story/PresentationRenderer.tsx)
+- [src/lib/story/generator.ts](/Users/dayana/Source/sphere/src/lib/story/generator.ts)
+- [src/lib/story/materialize.ts](/Users/dayana/Source/sphere/src/lib/story/materialize.ts)
+- [src/lib/story/playback.ts](/Users/dayana/Source/sphere/src/lib/story/playback.ts)
+- [src/lib/story/persistence.ts](/Users/dayana/Source/sphere/src/lib/story/persistence.ts)
+- [src/lib/story/publishing.ts](/Users/dayana/Source/sphere/src/lib/story/publishing.ts)
+- [src/lib/story/exportPipeline.ts](/Users/dayana/Source/sphere/src/lib/story/exportPipeline.ts)
+- [src/app/story/[slug]/page.tsx](/Users/dayana/Source/sphere/src/app/story/[slug]/page.tsx)
+- [src/app/api/story-exports/start/route.ts](/Users/dayana/Source/sphere/src/app/api/story-exports/start/route.ts)
 - [src/app/report/[id]/page.tsx](/Users/dayana/Source/sphere/src/app/report/[id]/page.tsx)
 
 ## 2. Principales problemas existentes
@@ -106,6 +123,10 @@ Responsable de:
 - playback;
 - export visual.
 
+Para `M2`, esta capa se especializa en la cadena:
+
+`Story Definition -> Materialized Story -> Playback Engine -> Scene Render Model -> Presentation Renderer`
+
 ### Persistence & Sharing
 Responsable de:
 - datasets;
@@ -163,6 +184,53 @@ Responsable de:
 - enriquecimiento de semantics y recommendation;
 - export pipeline más allá de `PNG`;
 - story/playback engine.
+- persistencia, publicación y export productivo de Story.
+
+## Objetivo M2 aprobado
+
+### Contratos
+- `StoryDefinition`
+- `SceneDefinition`
+- `MaterializedStory`
+- `MaterializedScene`
+- `VisualizationRenderModel`
+- `PlaybackState`
+
+Separación obligatoria:
+- `StoryDefinition`: lo que el usuario creó y persistimos.
+- `MaterializedStory`: el artefacto seguro y reproducible para player público y export.
+- `PlaybackState`: estado derivado desde tiempo global; no se persiste.
+
+### Render
+- `Story` no debe hablarle directamente a `Recharts`.
+- `Recharts` puede seguir existiendo como detalle de algunos renderers, pero no como dependencia conceptual del contrato de Story.
+- `Quick Result`, `Public Report`, `Story Player`, `Public Story` y futuro `Video Renderer` deben converger progresivamente sobre contratos de render compatibles.
+
+### Public Story
+- debe funcionar sin acceso al dataset privado;
+- debe consumir el mismo `Playback Engine`;
+- debe consumir el mismo `Presentation Renderer`;
+- no debe existir un segundo player paralelo solo para la URL pública.
+
+### Video
+- la arquitectura objetivo de export es híbrida y server-side:
+  - `Story Definition / Snapshot`
+  - `Playback Engine`
+  - `Shared Presentation Renderer`
+  - `Headless Browser`
+  - `Frames`
+  - `Native FFmpeg`
+  - `MP4`
+
+### Persistencia M2 implementada
+- `stories` persiste metadatos indexables + `story_definition` versionado.
+- `public_story_snapshots` persiste publicación segura con `materialized_story`.
+- `story_export_jobs` persiste el ciclo de export asíncrono y su estado.
+
+### Responsabilidad a evitar
+- `Dashboard.tsx` no debe transformarse en orquestador de Story domain.
+- `ReportCanvas.tsx` no debe absorber Story generation ni playback logic.
+- la lógica temporal y de materialización debe vivir en `src/lib/story/*` y capas de render dedicadas.
 
 ## Decisiones resueltas en M1
 - `run_dataset_query` queda encapsulado detrás de una capa tipada de query model y query service.

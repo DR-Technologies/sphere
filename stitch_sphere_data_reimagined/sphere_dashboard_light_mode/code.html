@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Sphere | Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        @import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap');
+        
+        body {
+            font-family: 'Geist', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid #e2e8f0;
+        }
+
+        .bento-hover {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .bento-hover:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.08);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #e2e8f0;
+            border-radius: 10px;
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "on-surface-variant": "#424754",
+                      "surface-container-lowest": "#ffffff",
+                      "secondary-fixed-dim": "#b7c8e1",
+                      "on-error-container": "#93000a",
+                      "background": "#f9f9ff",
+                      "on-secondary-container": "#54647a",
+                      "surface": "#f9f9ff",
+                      "surface-container-low": "#f0f3ff",
+                      "primary": "#0058be",
+                      "secondary-container": "#d0e1fb",
+                      "surface-bright": "#f9f9ff",
+                      "secondary": "#505f76",
+                      "primary-fixed": "#d8e2ff",
+                      "tertiary-fixed": "#ffdcc6",
+                      "surface-tint": "#005ac2",
+                      "on-primary": "#ffffff",
+                      "on-primary-container": "#fefcff",
+                      "inverse-on-surface": "#ecf1ff",
+                      "inverse-surface": "#263143",
+                      "surface-container": "#e7eeff",
+                      "secondary-fixed": "#d3e4fe",
+                      "on-background": "#111c2d",
+                      "on-tertiary-container": "#fffbff",
+                      "on-tertiary": "#ffffff",
+                      "primary-fixed-dim": "#adc6ff",
+                      "inverse-primary": "#adc6ff",
+                      "surface-variant": "#d8e3fb",
+                      "on-tertiary-fixed-variant": "#723600",
+                      "outline-variant": "#c2c6d6",
+                      "on-secondary-fixed": "#0b1c30",
+                      "surface-container-highest": "#d8e3fb",
+                      "tertiary-container": "#b75b00",
+                      "error-container": "#ffdad6",
+                      "on-error": "#ffffff",
+                      "on-surface": "#111c2d",
+                      "on-primary-fixed": "#001a42",
+                      "primary-container": "#2170e4",
+                      "tertiary": "#924700",
+                      "on-tertiary-fixed": "#311400",
+                      "outline": "#727785",
+                      "tertiary-fixed-dim": "#ffb786",
+                      "surface-container-high": "#dee8ff",
+                      "error": "#ba1a1a",
+                      "on-primary-fixed-variant": "#004395",
+                      "on-secondary": "#ffffff",
+                      "surface-dim": "#cfdaf2",
+                      "on-secondary-fixed-variant": "#38485d"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "spacing": {
+                      "xl": "40px",
+                      "margin-mobile": "16px",
+                      "gutter": "24px",
+                      "container-max": "1280px",
+                      "xs": "4px",
+                      "lg": "24px",
+                      "sm": "8px",
+                      "md": "16px",
+                      "base": "4px"
+              },
+              "fontFamily": {
+                      "headline-lg-mobile": ["Geist"],
+                      "body-lg": ["Geist"],
+                      "headline-md": ["Geist"],
+                      "label-md": ["Geist"],
+                      "headline-lg": ["Geist"],
+                      "body-md": ["Geist"],
+                      "body-sm": ["Geist"],
+                      "label-sm": ["Geist"],
+                      "display": ["Geist"]
+              },
+              "fontSize": {
+                      "headline-lg-mobile": ["28px", {"lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                      "body-lg": ["18px", {"lineHeight": "28px", "letterSpacing": "0", "fontWeight": "400"}],
+                      "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "500"}],
+                      "label-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+                      "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                      "body-md": ["16px", {"lineHeight": "24px", "letterSpacing": "0", "fontWeight": "400"}],
+                      "body-sm": ["14px", {"lineHeight": "20px", "letterSpacing": "0", "fontWeight": "400"}],
+                      "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                      "display": ["48px", {"lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "600"}]
+              }
+            },
+          },
+        }
+    </script>
+</head>
+<body class="bg-surface-container-lowest text-on-surface overflow-x-hidden min-h-screen">
+<!-- Sidebar Navigation -->
+<aside class="h-screen w-64 fixed left-0 top-0 bg-surface border-r border-outline-variant flex flex-col p-md gap-sm z-50">
+<div class="flex flex-col gap-xs mb-lg px-sm">
+<div class="font-headline-md text-headline-md text-primary font-bold">Sphere</div>
+<div class="font-label-md text-label-md text-on-surface-variant opacity-70">Workspace Management</div>
+</div>
+<nav class="flex flex-col gap-xs flex-1">
+<button class="flex items-center gap-md p-md bg-secondary-container text-on-secondary-container font-bold rounded-lg transition-all scale-98 active:scale-95 duration-150">
+<span class="material-symbols-outlined" data-icon="construction">construction</span>
+<span class="font-label-md text-label-md">Tools</span>
+</button>
+<button class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-all scale-98 active:scale-95 duration-150">
+<span class="material-symbols-outlined" data-icon="workspaces">workspaces</span>
+<span class="font-label-md text-label-md">Workspace</span>
+</button>
+<button class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-all scale-98 active:scale-95 duration-150">
+<span class="material-symbols-outlined" data-icon="auto_awesome_motion">auto_awesome_motion</span>
+<span class="font-label-md text-label-md">Templates</span>
+</button>
+<button class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-all scale-98 active:scale-95 duration-150">
+<span class="material-symbols-outlined" data-icon="folder_open">folder_open</span>
+<span class="font-label-md text-label-md">Assets</span>
+</button>
+<button class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-all scale-98 active:scale-95 duration-150">
+<span class="material-symbols-outlined" data-icon="insights">insights</span>
+<span class="font-label-md text-label-md">Analytics</span>
+</button>
+</nav>
+<div class="mt-auto flex flex-col gap-xs border-t border-outline-variant pt-md">
+<button class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-all">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+<span class="font-label-md text-label-md">Help</span>
+</button>
+<button class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-all">
+<span class="material-symbols-outlined" data-icon="rate_review">rate_review</span>
+<span class="font-label-md text-label-md">Feedback</span>
+</button>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-64 min-h-screen">
+<!-- Top Bar -->
+<header class="w-full h-16 bg-surface-container-lowest flex justify-between items-center px-lg border-b border-outline-variant sticky top-0 z-40 shadow-sm">
+<div class="flex items-center gap-xl">
+<div class="font-body-md text-body-md text-primary border-b-2 border-primary pb-1">Dashboard</div>
+<div class="font-body-md text-body-md text-on-surface-variant hover:text-primary transition-colors cursor-pointer">Quick Result</div>
+<div class="font-body-md text-body-md text-on-surface-variant hover:text-primary transition-colors cursor-pointer">Story Studio</div>
+</div>
+<div class="flex items-center gap-md">
+<div class="relative group">
+<input class="bg-surface-container-low border-none rounded-full px-md py-xs text-body-sm w-64 focus:ring-2 focus:ring-primary/20 transition-all outline-none" placeholder="Search insights..." type="text"/>
+<span class="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-outline text-sm" data-icon="search">search</span>
+</div>
+<button class="p-xs hover:bg-surface-container-low rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="notifications">notifications</span>
+</button>
+<button class="p-xs hover:bg-surface-container-low rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="settings">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden bg-surface-container">
+<img class="w-full h-full object-cover" data-alt="A professional high-resolution headshot of a creative director in a bright, modern architectural studio. The lighting is crisp and natural, highlighting a clean-shaven face and thoughtful expression. The background is softly blurred, showing minimalist white office furniture and a splash of cool blue from a digital display, maintaining a clinical yet sophisticated corporate aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAsk8CLsSGKjHwU5a9UC2wuWefOWGAZ6kaL4XjdRc2uj1Va3JGrcKCX59yyQZz4aNgbf-NcEAkNu22XC9yhEM-Vq_iasa2n6FNY9IGz3HbURStqnRrCHyldkKJa-ICtz4cwe418bQh8B3UAllYbSZU_lgb1YsirITkAfrP2FsPHK3HZBa4fzxFtnMgI9iJilqPTCSElnXk-6vfCsFKp-KplFkryiv3wtZzplImZKHAKuSnVAP5iJ3Yb"/>
+</div>
+</div>
+</header>
+<!-- Dashboard Content -->
+<div class="p-xl max-w-container-max mx-auto space-y-xl">
+<!-- Hero Section / Metrics -->
+<section class="grid grid-cols-1 md:grid-cols-3 gap-lg">
+<div class="bg-surface border border-outline-variant p-lg rounded-xl shadow-sm flex items-center justify-between group hover:border-primary/30 transition-all cursor-pointer">
+<div>
+<p class="font-label-md text-label-md text-outline mb-xs">Active Projects</p>
+<h3 class="font-headline-lg text-headline-lg text-on-surface">12</h3>
+<p class="text-primary font-label-sm text-label-sm mt-xs">+2 from last week</p>
+</div>
+<div class="bg-primary-fixed p-md rounded-lg group-hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-primary" data-icon="rocket_launch">rocket_launch</span>
+</div>
+</div>
+<div class="bg-surface border border-outline-variant p-lg rounded-xl shadow-sm flex items-center justify-between group hover:border-primary/30 transition-all cursor-pointer">
+<div>
+<p class="font-label-md text-label-md text-outline mb-xs">Total Data Points</p>
+<h3 class="font-headline-lg text-headline-lg text-on-surface">4.8M</h3>
+<p class="text-tertiary font-label-sm text-label-sm mt-xs">Real-time sync active</p>
+</div>
+<div class="bg-tertiary-fixed p-md rounded-lg group-hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-tertiary" data-icon="analytics">analytics</span>
+</div>
+</div>
+<div class="bg-surface border border-outline-variant p-lg rounded-xl shadow-sm flex items-center justify-between group hover:border-primary/30 transition-all cursor-pointer">
+<div>
+<p class="font-label-md text-label-md text-outline mb-xs">Active Stories</p>
+<h3 class="font-headline-lg text-headline-lg text-on-surface">34</h3>
+<p class="text-on-secondary-fixed-variant font-label-sm text-label-sm mt-xs">8 stories pending review</p>
+</div>
+<div class="bg-secondary-fixed p-md rounded-lg group-hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-secondary" data-icon="auto_stories">auto_stories</span>
+</div>
+</div>
+</section>
+<!-- Bento Grid Recent Projects -->
+<section>
+<div class="flex justify-between items-end mb-lg">
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface">Recent Projects</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Manage and track your latest workspace initiatives.</p>
+</div>
+<button class="bg-primary text-on-primary font-label-md text-label-md px-md py-sm rounded-lg hover:bg-primary-container transition-colors flex items-center gap-sm">
+<span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+                        New Project
+                    </button>
+</div>
+<div class="grid grid-cols-12 gap-lg">
+<!-- Project Card 1 (Large) -->
+<div class="col-span-12 md:col-span-8 bg-surface border border-outline-variant rounded-xl overflow-hidden bento-hover">
+<div class="relative h-64 w-full">
+<img class="w-full h-full object-cover" data-alt="A clean, minimalist 3D rendering of a data visualization landscape. Abstract white towers represent data bars against a soft blue and light grey background. The lighting is ethereal and precise, casting soft shadows on a pure white surface. The aesthetic is high-tech, medical-grade clarity, embodying professional SaaS design for a modern corporate environment." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDnft6Dxitd6OkFin1dOjK9PT2JPtnl6EvcL1ccOUVPDG1NdbZnnwYke6_qPl88fyno9dAEeFOc0dwCtY7WTGOJqZ9IQf_rJnJj27aseHzduO5pI-POiciBygEmusQPmzP8p7sjKX-tBGGn55xrh8mx7frPr30I9rMEyxnEQDIs5UlmzTJg03DdJyPLzGsTvHwelfXywzTv4C8D_xYK_NJiDEqnpDHvQAvHIjJXEelaHEZ2pCUfUMXZ"/>
+<div class="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent"></div>
+<div class="absolute top-md right-md">
+<span class="bg-surface/90 backdrop-blur px-sm py-xs rounded text-label-sm font-label-sm text-primary border border-primary/20">In Progress</span>
+</div>
+</div>
+<div class="p-lg">
+<div class="flex justify-between items-start mb-md">
+<div>
+<h4 class="font-headline-md text-headline-md text-on-surface mb-xs">Quantum Neural Core</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Advanced algorithmic modeling for predictive analysis in fiscal sectors.</p>
+</div>
+<div class="flex -space-x-2">
+<div class="w-8 h-8 rounded-full border-2 border-surface overflow-hidden bg-surface-container"><img class="w-full h-full object-cover" data-alt="Close up portrait of a professional developer in a bright environment. High-key lighting, modern aesthetic, professional photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAnBIHdhzNdoQAZy2zCOJiBs4S6DP068aXhVFlOS-zFKhH5BrLP0046TzQ2-lGWcs7G2KNuAK1PS6onoIlxCHG_j5Nc1ERYEG7VZ2injGUu5YuMmWjyDzhp1OYIyJTVdgs0fM_JBgHljVV1yF24aJqu1FR1R544hK_IxkOhRgqM3FAKi1RxkqbZTkcVLUMCjaaoLJ5ajwxLp5OcFzytdtjb12-C-UH1R6qoEc9Pp5JUfotaWyt26-aK"/></div>
+<div class="w-8 h-8 rounded-full border-2 border-surface overflow-hidden bg-surface-container"><img class="w-full h-full object-cover" data-alt="Portrait of a female technical lead in a high-tech office. Minimalist white background, soft natural lighting, high-end professional look." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAKHuJb42LWX_xGmKt1C_AbwOTc-OgF33mKmWvfZJEUzLdP0kepgE-gwWo9KBXEC0a5f4Nk0qS8YkmP9si0n2_JhxK82VGIb7Cz4TiIiShJMm2QXwcbmgmeovZZQh01Rj8fBggGDQjGEsXNa4I-YfHQOeg0Ur45ARqk504WTe0Zi2hVwY4HQIa7cQV4AbET48hWXCic9A1LWDRBwjnA5vuikkt0B4Z-TsLPsD_wfGolkgBA7M8B_liC"/></div>
+<div class="w-8 h-8 rounded-full border-2 border-surface bg-surface-container-high flex items-center justify-center text-[10px] font-bold">+4</div>
+</div>
+</div>
+<div class="w-full bg-surface-container-low h-1 rounded-full overflow-hidden">
+<div class="bg-primary h-full w-3/4"></div>
+</div>
+<div class="flex justify-between mt-sm">
+<span class="font-label-sm text-label-sm text-outline">75% Complete</span>
+<span class="font-label-sm text-label-sm text-outline">Due: Oct 24</span>
+</div>
+</div>
+</div>
+<!-- Project Card 2 (Vertical Small) -->
+<div class="col-span-12 md:col-span-4 bg-surface border border-outline-variant rounded-xl p-lg flex flex-col bento-hover">
+<div class="w-full aspect-square bg-surface-container-low rounded-lg mb-lg overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="A minimalist architectural photograph of a spiral staircase from a top-down view, emphasizing geometry and precision. The colors are strictly white, slate gray, and a highlight of vivid blue. The lighting is diffused and professional, creating a sense of organized efficiency and technical reliability suitable for a high-end corporate dashboard." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBC_ZhRRMFa5f9kJRp1YS8EpipB2jBdjWO_BUzMZ3NRoaBBmYJs0xRyUIE_1btNAq-G9efSi1-STJl-Gu_PzcsY7rql5DU2iAN45GCnkBr4phxelF0wJEN3UlJ1Qki-jBWuf72kNqJtBivUZWExqMUa4OqdSYgCdidOZfRyt9dGrEF7LYMGYqlo2ZjX02ws2g75cVJBmNb8FdL2bCYO8H1u8M-tj3gm7JbZsnCW2X3mWbUd18DG4yNs"/>
+</div>
+<div class="flex-1">
+<h4 class="font-headline-sm text-headline-sm text-on-surface mb-xs">Helios Design Ops</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-md">Optimizing internal creative workflows with automated handoff protocols.</p>
+</div>
+<div class="flex items-center gap-sm text-primary mt-auto">
+<span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>
+<span class="font-label-md text-label-md">High Velocity</span>
+</div>
+</div>
+<!-- Project Card 3 (Small Square) -->
+<div class="col-span-12 md:col-span-4 bg-surface border border-outline-variant rounded-xl p-lg bento-hover">
+<div class="flex justify-between items-center mb-md">
+<div class="w-10 h-10 bg-secondary-container rounded-lg flex items-center justify-center text-secondary">
+<span class="material-symbols-outlined" data-icon="cloud_sync">cloud_sync</span>
+</div>
+<span class="text-outline font-label-sm text-label-sm">v2.4.1</span>
+</div>
+<h4 class="font-headline-sm text-headline-sm text-on-surface mb-xs">Cloud Migration</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Archiving legacy databases to the new Sphere decentralized cluster.</p>
+</div>
+<!-- Project Card 4 (Small Square) -->
+<div class="col-span-12 md:col-span-4 bg-surface border border-outline-variant rounded-xl p-lg bento-hover">
+<div class="flex justify-between items-center mb-md">
+<div class="w-10 h-10 bg-tertiary-container rounded-lg flex items-center justify-center text-on-tertiary">
+<span class="material-symbols-outlined" data-icon="security">security</span>
+</div>
+<span class="text-error font-label-sm text-label-sm">Review Needed</span>
+</div>
+<h4 class="font-headline-sm text-headline-sm text-on-surface mb-xs">Access Control</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Implementing biometric authentication layers across user workspaces.</p>
+</div>
+<!-- Project Card 5 (Small Square) -->
+<div class="col-span-12 md:col-span-4 bg-surface border border-outline-variant rounded-xl p-lg bento-hover">
+<div class="flex justify-between items-center mb-md">
+<div class="w-10 h-10 bg-surface-container-highest rounded-lg flex items-center justify-center text-on-surface">
+<span class="material-symbols-outlined" data-icon="brush">brush</span>
+</div>
+<span class="text-outline font-label-sm text-label-sm">Draft</span>
+</div>
+<h4 class="font-headline-sm text-headline-sm text-on-surface mb-xs">Brand Refresh</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Evolving the visual identity towards clinical, high-performance minimalism.</p>
+</div>
+</div>
+</section>
+<!-- Table Section -->
+<section class="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
+<div class="p-lg border-b border-outline-variant flex justify-between items-center">
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface">Active Datasets</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Real-time status of connected data pipelines.</p>
+</div>
+<div class="flex gap-sm">
+<button class="border border-outline-variant text-on-surface-variant font-label-md text-label-md px-md py-sm rounded-lg hover:bg-surface-container-low transition-colors">Export CSV</button>
+<button class="bg-primary text-on-primary font-label-md text-label-md px-md py-sm rounded-lg hover:bg-primary-container transition-colors">Manage Streams</button>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead>
+<tr class="bg-surface-container-low font-label-md text-label-md text-outline uppercase tracking-wider">
+<th class="px-lg py-md">Dataset Name</th>
+<th class="px-lg py-md">Status</th>
+<th class="px-lg py-md">Ingestion Rate</th>
+<th class="px-lg py-md">Last Sync</th>
+<th class="px-lg py-md">Storage</th>
+<th class="px-lg py-md text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant">
+<tr class="hover:bg-surface-container-lowest transition-colors group cursor-pointer">
+<td class="px-lg py-md">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary" data-icon="database">database</span>
+<span class="font-body-md text-body-md text-on-surface font-medium">Customer_Intel_Global</span>
+</div>
+</td>
+<td class="px-lg py-md">
+<span class="inline-flex items-center px-sm py-xs rounded-full text-[10px] font-bold bg-green-100 text-green-700">ACTIVE</span>
+</td>
+<td class="px-lg py-md font-body-sm text-body-sm text-on-surface-variant">420 req/s</td>
+<td class="px-lg py-md font-body-sm text-body-sm text-on-surface-variant">2 mins ago</td>
+<td class="px-lg py-md">
+<div class="flex items-center gap-md">
+<div class="flex-1 w-24 bg-surface-container h-1 rounded-full">
+<div class="bg-primary h-full w-2/3"></div>
+</div>
+<span class="font-label-sm text-label-sm text-outline">1.2 TB</span>
+</div>
+</td>
+<td class="px-lg py-md text-right">
+<button class="p-xs hover:bg-surface-container-low rounded-full">
+<span class="material-symbols-outlined text-outline" data-icon="more_vert">more_vert</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors group cursor-pointer">
+<td class="px-lg py-md">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary" data-icon="settings_ethernet">settings_ethernet</span>
+<span class="font-body-md text-body-md text-on-surface font-medium">Ad_Performance_Main</span>
+</div>
+</td>
+<td class="px-lg py-md">
+<span class="inline-flex items-center px-sm py-xs rounded-full text-[10px] font-bold bg-green-100 text-green-700">ACTIVE</span>
+</td>
+<td class="px-lg py-md font-body-sm text-body-sm text-on-surface-variant">1.2k req/s</td>
+<td class="px-lg py-md font-body-sm text-body-sm text-on-surface-variant">Now</td>
+<td class="px-lg py-md">
+<div class="flex items-center gap-md">
+<div class="flex-1 w-24 bg-surface-container h-1 rounded-full">
+<div class="bg-primary h-full w-1/4"></div>
+</div>
+<span class="font-label-sm text-label-sm text-outline">480 GB</span>
+</div>
+</td>
+<td class="px-lg py-md text-right">
+<button class="p-xs hover:bg-surface-container-low rounded-full">
+<span class="material-symbols-outlined text-outline" data-icon="more_vert">more_vert</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors group cursor-pointer">
+<td class="px-lg py-md">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary" data-icon="lan">lan</span>
+<span class="font-body-md text-body-md text-on-surface font-medium">Logistics_Tracker_v4</span>
+</div>
+</td>
+<td class="px-lg py-md">
+<span class="inline-flex items-center px-sm py-xs rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">PAUSED</span>
+</td>
+<td class="px-lg py-md font-body-sm text-body-sm text-on-surface-variant">0 req/s</td>
+<td class="px-lg py-md font-body-sm text-body-sm text-on-surface-variant">14 hrs ago</td>
+<td class="px-lg py-md">
+<div class="flex items-center gap-md">
+<div class="flex-1 w-24 bg-surface-container h-1 rounded-full">
+<div class="bg-primary h-full w-full"></div>
+</div>
+<span class="font-label-sm text-label-sm text-outline">8.4 TB</span>
+</div>
+</td>
+<td class="px-lg py-md text-right">
+<button class="p-xs hover:bg-surface-container-low rounded-full">
+<span class="material-symbols-outlined text-outline" data-icon="more_vert">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="p-md bg-surface-container-low flex justify-center">
+<button class="font-label-md text-label-md text-primary hover:underline">View All Datasets</button>
+</div>
+</section>
+</div>
+</main>
+<!-- Micro-interaction script -->
+<script>
+        document.querySelectorAll('.bento-hover').forEach(card => {
+            card.addEventListener('mouseenter', () => {
+                card.classList.add('shadow-md');
+            });
+            card.addEventListener('mouseleave', () => {
+                card.classList.remove('shadow-md');
+            });
+        });
+    </script>
+</body></html>

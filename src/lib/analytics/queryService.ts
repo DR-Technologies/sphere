@@ -24,6 +24,17 @@ function buildAggregationExpression(columnsMeta: DatasetColumnMeta[], columnName
   return `${aggregation}("${columnName}")`;
 }
 
+function getEffectiveAggregation(model: WidgetQueryModel, columnsMeta: DatasetColumnMeta[]) {
+  if (model.widget.type === 'treemap' && model.widget.aggregation === 'NONE') {
+    const columnType = getColumnType(columnsMeta, model.widget.yAxis);
+    if (columnType && NUMERIC_COLUMN_TYPES.has(columnType)) {
+      return 'SUM';
+    }
+  }
+
+  return model.widget.aggregation;
+}
+
 function escapeFilterValue(value: string | null) {
   return String(value ?? '').replace(/'/g, "''");
 }
@@ -37,18 +48,19 @@ function buildWhereClause(model: WidgetQueryModel) {
 export function buildWidgetSql(model: WidgetQueryModel, columnsMeta: DatasetColumnMeta[]) {
   const { widget } = model;
   const whereClause = buildWhereClause(model);
+  const effectiveAggregation = getEffectiveAggregation(model, columnsMeta);
 
   if (model.kind === 'card') {
-    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
+    const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, effectiveAggregation);
     return `SELECT ${aggExpr} as "${widget.yAxis}" FROM dataset ${whereClause}`;
   }
 
   if (model.kind === 'map' && widget.latitudeField && widget.longitudeField) {
-    const metricExpr = widget.aggregation === 'NONE'
+    const metricExpr = effectiveAggregation === 'NONE'
       ? `"${widget.yAxis}"::double precision`
-      : buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
+      : buildAggregationExpression(columnsMeta, widget.yAxis, effectiveAggregation);
     const dimensionSelect = widget.xAxis ? `"${widget.xAxis}",` : '';
-    const groupByClause = widget.aggregation === 'NONE'
+    const groupByClause = effectiveAggregation === 'NONE'
       ? ''
       : `GROUP BY ${widget.xAxis ? `"${widget.xAxis}",` : ''} "${widget.latitudeField}", "${widget.longitudeField}"`;
 
@@ -87,13 +99,13 @@ export function buildWidgetSql(model: WidgetQueryModel, columnsMeta: DatasetColu
     return `SELECT ${cols} FROM dataset ${whereClause} LIMIT 100`;
   }
 
-  if (widget.aggregation === 'NONE') {
+  if (effectiveAggregation === 'NONE') {
     const orderClause = widget.orderBy ? `ORDER BY "${widget.xAxis}" ${widget.orderBy}` : '';
     const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 100';
     return `SELECT "${widget.xAxis}", "${widget.yAxis}" FROM dataset ${whereClause} ${orderClause} ${limitClause}`;
   }
 
-  const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, widget.aggregation);
+  const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, effectiveAggregation);
   const orderCol = widget.orderBy === 'ASC' || widget.orderBy === 'DESC' ? `"${widget.yAxis}"` : `"${widget.xAxis}"`;
   const orderDir = widget.orderBy || 'DESC';
   const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 50';

@@ -42,6 +42,7 @@ describe('quick result recommendation', () => {
     expect(compositionWidgets.length).toBeGreaterThan(0);
     compositionWidgets.forEach((widget) => {
       expect(widget.xAxis).toBe('Categoria');
+      expect(widget.aggregation).toBe('SUM');
     });
   });
 });
