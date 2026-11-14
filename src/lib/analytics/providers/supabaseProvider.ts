@@ -8,11 +8,14 @@ import type {
   DatasetColumn,
   DatasetColumnStat,
   DatasetProfileResult,
+  DatasetProfileExecutionOptions,
   DatasetRow,
   NormalizedDatasetManifest,
   ProfileFromUrlOptions
 } from '../types';
+import { resolvePrivateFileUrl } from '@/lib/storage/files';
 import { annotateDatasetColumns } from '../semantics';
+import { normalizeDatasetQueryError } from '../queryError';
 
 function detectFileExtension(fileName: string) {
   const match = fileName.toLowerCase().match(/\.(csv|json|xlsx|xls)(\s|\(|$)/);
@@ -83,13 +86,87 @@ async function parseJson(file: File, options?: DatasetImportOptions): Promise<Re
   return rowsFromJsonOrient(parsed, options?.jsonOrient || 'records');
 }
 
-async function parseExcel(file: File, sheetName?: string): Promise<Record<string, unknown>[]> {
+interface ParsedDatasetSource {
+  extension: string;
+  estimatedRows: number;
+  forEachChunk: (
+    chunkSize: number,
+    callback: (rows: Record<string, unknown>[], processedSourceRows: number) => void | Promise<void>
+  ) => Promise<void>;
+  release: () => void;
+}
+
+function createArraySource(rows: Record<string, unknown>[], extension: string): ParsedDatasetSource {
+  return {
+    extension,
+    estimatedRows: rows.length,
+    async forEachChunk(chunkSize, callback) {
+      for (let start = 0; start < rows.length; start += chunkSize) {
+        const end = Math.min(start + chunkSize, rows.length);
+        await callback(rows.slice(start, end), end);
+      }
+    },
+    release() {
+      rows.length = 0;
+    }
+  };
+}
+
+async function parseExcel(file: File, sheetName?: string): Promise<ParsedDatasetSource> {
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+  const workbook = XLSX.read(data, {
+    type: 'array',
+    cellDates: true,
+    dense: true,
+    sheets: sheetName ? [sheetName] : 0
+  });
   const targetSheetName = sheetName || workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[targetSheetName];
+  let worksheet: XLSX.WorkSheet | undefined = workbook.Sheets[targetSheetName];
   if (!worksheet) throw new Error(`Sheet "${targetSheetName}" not found in workbook.`);
-  return XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { raw: true, defval: null });
+  const decodedRange = worksheet['!ref'] ? XLSX.utils.decode_range(worksheet['!ref']) : null;
+  if (!decodedRange || decodedRange.e.r <= decodedRange.s.r) {
+    return createArraySource([], detectFileExtension(file.name));
+  }
+
+  // Let SheetJS derive the exact column names (including duplicate/blank header
+  // normalization) from a tiny range, then reuse those names for every chunk.
+  const headerProbe = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
+    raw: true,
+    defval: null,
+    range: {
+      s: decodedRange.s,
+      e: { r: Math.min(decodedRange.s.r + 1, decodedRange.e.r), c: decodedRange.e.c }
+    }
+  });
+  const columnNames = Object.keys(headerProbe[0] || {});
+  const dataStartRow = decodedRange.s.r + 1;
+  const estimatedRows = Math.max(0, decodedRange.e.r - decodedRange.s.r);
+
+  return {
+    extension: detectFileExtension(file.name),
+    estimatedRows,
+    async forEachChunk(chunkSize, callback) {
+      if (!worksheet) throw new Error('Excel worksheet was released before profiling completed.');
+      for (let rowStart = dataStartRow; rowStart <= decodedRange.e.r; rowStart += chunkSize) {
+        const rowEnd = Math.min(rowStart + chunkSize - 1, decodedRange.e.r);
+        const chunk = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
+          header: columnNames,
+          raw: true,
+          defval: null,
+          range: {
+            s: { r: rowStart, c: decodedRange.s.c },
+            e: { r: rowEnd, c: decodedRange.e.c }
+          }
+        });
+        await callback(chunk, rowEnd - decodedRange.s.r);
+      }
+    },
+    release() {
+      delete workbook.Sheets[targetSheetName];
+      workbook.SheetNames.length = 0;
+      worksheet = undefined;
+    }
+  };
 }
 
 function parseBoolean(value: unknown) {
@@ -165,27 +242,95 @@ function parseDate(value: unknown, dateFormat: DateInputFormat = 'AUTO') {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function inferColumnType(values: unknown[], dateFormat?: DateInputFormat): string {
-  const meaningfulValues = values.filter((value) => value !== null && value !== undefined && value !== '');
-  if (meaningfulValues.length === 0) return 'VARCHAR';
+interface ColumnTypeAccumulator {
+  meaningful: number;
+  allBoolean: boolean;
+  allNumeric: boolean;
+  allInteger: boolean;
+  allDate: boolean;
+  hasTime: boolean;
+}
 
-  const booleans = meaningfulValues.every((value) => parseBoolean(value) !== null);
-  if (booleans) return 'BOOLEAN';
+interface ColumnStatAccumulator {
+  nulls: number;
+  min: unknown;
+  max: unknown;
+}
 
-  const numerics = meaningfulValues.map(parseNumeric);
-  const allNumeric = numerics.every((value) => value !== null);
-  if (allNumeric) {
-    return numerics.every((value) => Number.isInteger(value as number)) ? 'INTEGER' : 'DOUBLE';
-  }
+const DEFAULT_PROFILE_CHUNK_SIZE = 5_000;
 
-  const dates = meaningfulValues.map((value) => parseDate(value, dateFormat));
-  const allDates = dates.every((value) => value !== null);
-  if (allDates) {
-    const hasTime = meaningfulValues.some((value) => typeof value === 'string' && /[tT ]\d{2}:\d{2}/.test(value));
-    return hasTime ? 'TIMESTAMP' : 'DATE';
-  }
+function createTypeAccumulator(): ColumnTypeAccumulator {
+  return {
+    meaningful: 0,
+    allBoolean: true,
+    allNumeric: true,
+    allInteger: true,
+    allDate: true,
+    hasTime: false
+  };
+}
 
+function updateTypeAccumulator(accumulator: ColumnTypeAccumulator, value: unknown, dateFormat?: DateInputFormat) {
+  if (value === null || value === undefined || value === '') return;
+  accumulator.meaningful += 1;
+
+  accumulator.allBoolean = accumulator.allBoolean && parseBoolean(value) !== null;
+  const numeric = parseNumeric(value);
+  accumulator.allNumeric = accumulator.allNumeric && numeric !== null;
+  accumulator.allInteger = accumulator.allInteger && numeric !== null && Number.isInteger(numeric);
+  accumulator.allDate = accumulator.allDate && parseDate(value, dateFormat) !== null;
+  accumulator.hasTime = accumulator.hasTime
+    || (typeof value === 'string' && /[tT ]\d{2}:\d{2}/.test(value));
+}
+
+function resolveColumnType(accumulator: ColumnTypeAccumulator) {
+  if (accumulator.meaningful === 0) return 'VARCHAR';
+  if (accumulator.allBoolean) return 'BOOLEAN';
+  if (accumulator.allNumeric) return accumulator.allInteger ? 'INTEGER' : 'DOUBLE';
+  if (accumulator.allDate) return accumulator.hasTime ? 'TIMESTAMP' : 'DATE';
   return 'VARCHAR';
+}
+
+function updateStatAccumulator(accumulator: ColumnStatAccumulator, value: DatasetRow[string]) {
+  if (value === null || value === undefined || value === '') {
+    accumulator.nulls += 1;
+    return;
+  }
+
+  if (typeof value === 'number') {
+    accumulator.min = accumulator.min === null ? value : Math.min(accumulator.min as number, value);
+    accumulator.max = accumulator.max === null ? value : Math.max(accumulator.max as number, value);
+    return;
+  }
+
+  const comparable = String(value);
+  accumulator.min = accumulator.min === null || comparable < String(accumulator.min) ? comparable : accumulator.min;
+  accumulator.max = accumulator.max === null || comparable > String(accumulator.max) ? comparable : accumulator.max;
+}
+
+function countUniqueValues(rows: DatasetRow[], columnName: string) {
+  const uniqueValues = new Set<string>();
+  for (const row of rows) {
+    const value = row[columnName];
+    if (value !== null && value !== undefined && value !== '') uniqueValues.add(JSON.stringify(value));
+  }
+  return uniqueValues.size;
+}
+
+async function reportProgress(
+  execution: DatasetProfileExecutionOptions | undefined,
+  stage: 'reading' | 'profiling' | 'normalizing',
+  processedRows: number,
+  totalRows: number,
+  progressOverride?: number
+) {
+  execution?.onProgress?.({
+    stage,
+    progress: progressOverride ?? (totalRows > 0 ? Math.min(1, processedRows / totalRows) : 1),
+    processedRows,
+    totalRows
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 function normalizeValue(value: unknown, type: string, dateFormat?: DateInputFormat): DatasetRow[string] {
@@ -213,19 +358,6 @@ function normalizeValue(value: unknown, type: string, dateFormat?: DateInputForm
   }
 }
 
-function compareValues(values: unknown[]) {
-  const filtered = values.filter((value) => value !== null && value !== undefined);
-  if (!filtered.length) return { min: null, max: null };
-  if (filtered.every((value) => typeof value === 'number')) {
-    return {
-      min: Math.min(...(filtered as number[])),
-      max: Math.max(...(filtered as number[]))
-    };
-  }
-  const sorted = filtered.map((value) => String(value)).sort();
-  return { min: sorted[0], max: sorted[sorted.length - 1] };
-}
-
 function buildManifest(sourceFormat: string, options: DatasetImportOptions | undefined, columns: DatasetColumn[], stats: DatasetColumnStat[]): NormalizedDatasetManifest {
   return {
     version: 1,
@@ -246,45 +378,104 @@ function buildManifest(sourceFormat: string, options: DatasetImportOptions | und
   };
 }
 
-async function parseFileByExtension(file: File, options?: DatasetImportOptions) {
+async function parseFileByExtension(file: File, options?: DatasetImportOptions): Promise<ParsedDatasetSource> {
   const extension = detectFileExtension(file.name);
-  if (extension === 'csv') return { rows: await parseCsv(file, options), extension };
-  if (extension === 'json') return { rows: await parseJson(file, options), extension };
-  if (extension === 'xlsx' || extension === 'xls') return { rows: await parseExcel(file, options?.sheetName), extension };
+  if (extension === 'csv') return createArraySource(await parseCsv(file, options), extension);
+  if (extension === 'json') return createArraySource(await parseJson(file, options), extension);
+  if (extension === 'xlsx' || extension === 'xls') return parseExcel(file, options?.sheetName);
   throw new Error(`Unsupported file format: ${extension || 'unknown'}`);
 }
 
-async function profileFile(file: File, options?: DatasetImportOptions): Promise<DatasetProfileResult> {
-  const { rows, extension } = await parseFileByExtension(file, options);
-  const columnNames = Array.from(new Set(rows.flatMap((row) => Object.keys(row || {}))));
+async function profileFile(
+  file: File,
+  options?: DatasetImportOptions,
+  execution?: DatasetProfileExecutionOptions
+): Promise<DatasetProfileResult> {
+  execution?.onProgress?.({ stage: 'reading', progress: 0 });
+  const source = await parseFileByExtension(file, options);
+  const chunkSize = Math.max(500, execution?.chunkSize || DEFAULT_PROFILE_CHUNK_SIZE);
+  await reportProgress(execution, 'reading', source.estimatedRows, source.estimatedRows);
+
+  const columnNames: string[] = [];
+  const typeAccumulators = new Map<string, ColumnTypeAccumulator>();
+  let totalRows = 0;
+  await source.forEachChunk(chunkSize, async (rows, processedSourceRows) => {
+    for (const row of rows) {
+      for (const name of Object.keys(row)) {
+        let accumulator = typeAccumulators.get(name);
+        if (!accumulator) {
+          accumulator = createTypeAccumulator();
+          typeAccumulators.set(name, accumulator);
+          columnNames.push(name);
+        }
+        updateTypeAccumulator(accumulator, row[name], options?.dateFormat);
+      }
+    }
+    totalRows += rows.length;
+    await reportProgress(execution, 'profiling', processedSourceRows, source.estimatedRows);
+  });
+
   const columns: DatasetColumn[] = columnNames.map((name) => ({
     name,
-    type: inferColumnType(rows.map((row) => row?.[name]), options?.dateFormat)
+    type: resolveColumnType(typeAccumulators.get(name) || createTypeAccumulator())
   }));
+  const statAccumulators = new Map(columns.map((column) => [column.name, {
+    nulls: 0,
+    min: null,
+    max: null
+  } satisfies ColumnStatAccumulator]));
+  const normalizedRows: DatasetRow[] = [];
+  const normalizedCsvParts: BlobPart[] = [];
+  let normalizedCount = 0;
 
-  const normalizedRows: DatasetRow[] = rows.map((row) => {
-    const normalized: DatasetRow = {};
-    columns.forEach((column) => {
-      normalized[column.name] = normalizeValue(row?.[column.name], column.type, options?.dateFormat);
+  await source.forEachChunk(chunkSize, async (rows, processedSourceRows) => {
+    const normalizedChunk = new Array<DatasetRow>(rows.length);
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const sourceRow = rows[rowIndex] || {};
+      const normalized: DatasetRow = {};
+      for (const column of columns) {
+        const value = normalizeValue(sourceRow[column.name], column.type, options?.dateFormat);
+        normalized[column.name] = value;
+        updateStatAccumulator(statAccumulators.get(column.name)!, value);
+      }
+      normalizedRows.push(normalized);
+      normalizedChunk[rowIndex] = normalized;
+    }
+
+    const csvChunk = Papa.unparse(normalizedChunk, {
+      header: normalizedCount === 0,
+      columns: columnNames,
+      skipEmptyLines: 'greedy'
     });
-    return normalized;
+    if (normalizedCount > 0 && csvChunk) normalizedCsvParts.push('\r\n');
+    if (csvChunk) normalizedCsvParts.push(csvChunk);
+    normalizedCount += normalizedChunk.length;
+    const rowProgress = source.estimatedRows > 0 ? processedSourceRows / source.estimatedRows : 1;
+    await reportProgress(execution, 'normalizing', processedSourceRows, source.estimatedRows, Math.min(0.8, rowProgress * 0.8));
   });
 
-  const stats: DatasetColumnStat[] = columns.map((column) => {
-    const values = normalizedRows.map((row) => row[column.name]);
-    const { min, max } = compareValues(values);
-    const nulls = values.filter((value) => value === null || value === undefined || value === '').length;
-    const meaningful = values.filter((value) => value !== null && value !== undefined && value !== '');
-    return {
+  source.release();
+  const stats: DatasetColumnStat[] = [];
+  for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+    const column = columns[columnIndex];
+    const accumulator = statAccumulators.get(column.name)!;
+    stats.push({
       column: column.name,
       type: column.type,
-      min,
-      max,
-      total: values.length,
-      nulls,
-      unique: new Set(meaningful.map((value) => JSON.stringify(value))).size
-    };
-  });
+      min: accumulator.min,
+      max: accumulator.max,
+      total: totalRows,
+      nulls: accumulator.nulls,
+      unique: countUniqueValues(normalizedRows, column.name)
+    });
+    await reportProgress(
+      execution,
+      'normalizing',
+      totalRows,
+      totalRows,
+      0.8 + (0.2 * (columnIndex + 1)) / Math.max(1, columns.length)
+    );
+  }
 
   const semanticColumns = annotateDatasetColumns(columns, stats);
 
@@ -293,22 +484,24 @@ async function profileFile(file: File, options?: DatasetImportOptions): Promise<
     stats,
     preview: normalizedRows.slice(0, 100),
     artifacts: {
-      normalizedCsv: Papa.unparse(normalizedRows, { header: true, skipEmptyLines: 'greedy' }),
+      normalizedCsv: new Blob(normalizedCsvParts, { type: 'text/csv;charset=utf-8' }),
       normalizedRows,
-      manifest: buildManifest(extension, options, semanticColumns, stats)
+      manifest: buildManifest(source.extension, options, semanticColumns, stats)
     }
   };
 }
 
 async function profileFromUrl(url: string, name: string, sheetName?: string, options?: ProfileFromUrlOptions): Promise<DatasetProfileResult> {
-  const sourceUrl = options?.normalizedFileUrl || url;
+  const sourceReference = options?.normalizedFileUrl || url;
+  const sourceUrl = await resolvePrivateFileUrl(sourceReference);
   const response = await fetch(sourceUrl);
+  if (!response.ok) throw new Error(`No se pudo abrir el archivo del dataset (${response.status}).`);
   const blob = await response.blob();
   const file = new File([blob], options?.normalizedFileUrl ? 'normalized.csv' : name, { type: blob.type });
   return profileFile(file, { sheetName });
 }
 
-async function runQuery(query: string, options?: { datasetId?: string }): Promise<Record<string, any>[]> {
+async function runQuery(query: string, options?: { datasetId?: string }): Promise<DatasetRow[]> {
   if (!options?.datasetId) {
     throw new Error('datasetId is required for Supabase analytics queries.');
   }
@@ -318,9 +511,14 @@ async function runQuery(query: string, options?: { datasetId?: string }): Promis
     p_query: query
   });
 
-  if (error) throw error;
+  if (error) throw normalizeDatasetQueryError(error);
 
-  return (data || []).map((row: { row_data: Record<string, any> }) => row.row_data || row);
+  return (data || []).map((row: unknown) => {
+    if (row && typeof row === 'object' && 'row_data' in row) {
+      return (row as { row_data: DatasetRow }).row_data;
+    }
+    return row as DatasetRow;
+  });
 }
 
 export const supabaseAnalyticsProvider: AnalyticsProvider = {

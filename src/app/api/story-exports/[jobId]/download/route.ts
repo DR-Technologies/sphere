@@ -39,13 +39,22 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: 'Export file not available.' }, { status: 404 });
   }
 
-  const buffer = await readStoryExportFile(jobId);
-  return new NextResponse(buffer, {
+  const readStartedAt = performance.now();
+  let buffer: Buffer;
+  try {
+    buffer = await readStoryExportFile(jobId);
+  } catch {
+    return NextResponse.json({ error: 'Export artifact expired or is unavailable.' }, { status: 410 });
+  }
+  const readTimeMs = Math.max(0, Math.round(performance.now() - readStartedAt));
+  return new NextResponse(new Uint8Array(buffer), {
     status: 200,
     headers: {
       'content-type': 'video/mp4',
       'content-disposition': `attachment; filename="${status.fileName}"`,
-      'cache-control': 'no-store'
+      'content-length': String(buffer.byteLength),
+      'cache-control': 'private, max-age=300',
+      'server-timing': `artifact-read;dur=${readTimeMs}`
     }
   });
 }

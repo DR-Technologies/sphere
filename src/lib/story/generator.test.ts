@@ -71,12 +71,15 @@ describe('automatic story generator', () => {
       },
       widgets: recommendation.widgets,
       presentation: recommendation.presentation,
-      userId: 'user-1'
+      userId: 'user-1',
+      locale: 'en'
     });
 
     expect(story.scenes.some((scene) => scene.kind === 'race')).toBe(true);
     expect(story.scenes.some((scene) => scene.kind === 'composition')).toBe(false);
     expect(story.scenes.length).toBeLessThanOrEqual(6);
+    expect(story.scenes.find((scene) => scene.kind === 'evolution')?.subtitle).toContain('Temporal evolution');
+    expect(story.scenes.find((scene) => scene.kind === 'race')?.title).toContain('in motion');
   });
 
   it('creates a reasonable story without time fields', () => {

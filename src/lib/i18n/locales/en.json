@@ -5,6 +5,7 @@
     "reports": "My Reports",
     "upload": "Upload Dataset",
     "settings": "Settings",
+    "admin": "Administration",
     "logout": "Log Out"
   },
   "auth": {

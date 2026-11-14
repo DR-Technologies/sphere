@@ -15,6 +15,7 @@ export type StoryDurationMode = 'auto' | 'fixed';
 export type StoryPlaybackPhase = 'enter' | 'main' | 'exit';
 export type SceneBindingKind = 'none' | 'metric' | 'series' | 'ranking' | 'race' | 'composition';
 export type StoryValueFormatKind = 'number' | 'currency' | 'percentage';
+export type StoryLocale = 'en' | 'es';
 
 export interface StoryNoBinding {
   kind: 'none';
@@ -101,6 +102,8 @@ export interface StoryDefinition {
   motionPresetId: MotionPresetId;
   pacingPresetId: StoryPacingPresetId;
   orientation: StoryOrientation;
+  locale?: StoryLocale;
+  timeZone?: string;
   scenes: StorySceneDefinition[];
   createdAt?: string;
   updatedAt?: string;
@@ -263,6 +266,8 @@ export interface MaterializedStory {
   motionPresetId: MotionPresetId;
   pacingPresetId: StoryPacingPresetId;
   orientation: StoryOrientation;
+  locale?: StoryLocale;
+  timeZone?: string;
   scenes: MaterializedScene[];
   generatedAt: string;
 }

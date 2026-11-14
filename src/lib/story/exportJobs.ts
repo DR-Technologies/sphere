@@ -66,13 +66,43 @@ export async function createStoryExportJob(params: {
   storyId: string;
   userId: string;
   orientation: StoryOrientation;
+  cacheKey: string;
+  forceNew?: boolean;
 }) {
+  if (!params.forceNew) {
+    const { data: cachedData, error: cachedError } = await supabase
+      .from('story_export_jobs')
+      .select('*')
+      .eq('story_id', params.storyId)
+      .eq('orientation', params.orientation)
+      .eq('status', 'completed')
+      .contains('technical_metadata', { cacheKey: params.cacheKey })
+      .order('completed_at', { ascending: false })
+      .limit(1);
+
+    if (cachedError) {
+      appLogger.warn('story', 'FETCH_CACHED_STORY_EXPORT_JOB_FAILED', 'Failed to check reusable Story exports.', {
+        error: cachedError,
+        meta: { storyId: params.storyId, orientation: params.orientation }
+      });
+    }
+
+    if (cachedData?.[0]) {
+      return {
+        job: fromRow(cachedData[0] as StoryExportJobRow),
+        isNew: false,
+        cacheHit: true
+      };
+    }
+  }
+
   const { data: existingData, error: existingError } = await supabase
     .from('story_export_jobs')
     .select('*')
     .eq('story_id', params.storyId)
     .eq('orientation', params.orientation)
     .in('status', ['queued', 'processing'])
+    .contains('technical_metadata', { cacheKey: params.cacheKey })
     .order('created_at', { ascending: false })
     .limit(1);
 
@@ -86,7 +116,8 @@ export async function createStoryExportJob(params: {
   if (existingData?.[0]) {
     return {
       job: fromRow(existingData[0] as StoryExportJobRow),
-      isNew: false
+      isNew: false,
+      cacheHit: false
     };
   }
 
@@ -99,7 +130,7 @@ export async function createStoryExportJob(params: {
     render_token: crypto.randomUUID().replace(/-/g, ''),
     fps: 24,
     progress: 0,
-    technical_metadata: {},
+    technical_metadata: { cacheKey: params.cacheKey },
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
@@ -111,13 +142,33 @@ export async function createStoryExportJob(params: {
     .single();
 
   if (error) {
+    if (error.code === '23505') {
+      const { data: concurrentData, error: concurrentError } = await supabase
+        .from('story_export_jobs')
+        .select('*')
+        .eq('story_id', params.storyId)
+        .eq('orientation', params.orientation)
+        .in('status', ['queued', 'processing'])
+        .contains('technical_metadata', { cacheKey: params.cacheKey })
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (!concurrentError && concurrentData?.[0]) {
+        return {
+          job: fromRow(concurrentData[0] as StoryExportJobRow),
+          isNew: false,
+          cacheHit: false
+        };
+      }
+    }
     appLogger.error('story', 'CREATE_STORY_EXPORT_JOB_FAILED', 'Failed to create story export job.', { error, meta: { storyId: params.storyId } });
     throw error;
   }
 
   return {
     job: fromRow(data as StoryExportJobRow),
-    isNew: true
+    isNew: true,
+    cacheHit: false
   };
 }
 

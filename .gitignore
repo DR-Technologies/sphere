@@ -78,5 +78,6 @@ test-results/
 playwright-report/
 blob-report/
 artifacts/
+supabase/.temp/
 
 **/.DS_Store

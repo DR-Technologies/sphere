@@ -3,6 +3,7 @@ import { appLogger } from './logger';
 import type { DatasetColumnMeta, ReportPresentation, Widget } from './widgets/types';
 import { buildWidgetQueryModel } from './analytics/queryModel';
 import { resolveWidgetVisualizationResult } from './analytics/widgetResult';
+import { isMissingPostgrestFunction } from './supabaseCompatibility';
 
 export interface PublicReportSnapshot {
   id: string;
@@ -24,6 +25,40 @@ export interface PublicReportSnapshot {
 
 function generateSnapshotSlug() {
   return `pub_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
+}
+
+async function assertReportPublicationOwnership(params: {
+  userId: string;
+  datasetId: string;
+  reportId?: string | null;
+}) {
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError || !authData.user || authData.user.id !== params.userId) {
+    throw new Error('La sesión no tiene permiso para publicar este reporte.');
+  }
+
+  const { data: dataset, error: datasetError } = await supabase
+    .from('datasets')
+    .select('id')
+    .eq('id', params.datasetId)
+    .eq('user_id', params.userId)
+    .maybeSingle();
+  if (datasetError || !dataset) {
+    throw new Error('El dataset no pertenece a la cuenta autenticada.');
+  }
+
+  if (params.reportId) {
+    const { data: report, error: reportError } = await supabase
+      .from('reports')
+      .select('id')
+      .eq('id', params.reportId)
+      .eq('dataset_id', params.datasetId)
+      .eq('user_id', params.userId)
+      .maybeSingle();
+    if (reportError || !report) {
+      throw new Error('El reporte no pertenece al dataset autenticado.');
+    }
+  }
 }
 
 export async function buildSnapshotResults(params: {
@@ -63,6 +98,10 @@ export async function publishReportSnapshot(params: {
   userId: string;
   existingSlug?: string | null;
 }) {
+  await assertReportPublicationOwnership(params);
+  const activeSnapshot = !params.existingSlug && params.reportId
+    ? await getPublishedSnapshotByReportId(params.reportId)
+    : null;
   const widgetResults = await buildSnapshotResults({
     datasetId: params.datasetId,
     widgets: params.widgets,
@@ -70,7 +109,7 @@ export async function publishReportSnapshot(params: {
   });
 
   const payload = {
-    slug: params.existingSlug || generateSnapshotSlug(),
+    slug: params.existingSlug || activeSnapshot?.slug || generateSnapshotSlug(),
     report_id: params.reportId || null,
     dataset_id: params.datasetId,
     user_id: params.userId,
@@ -100,18 +139,33 @@ export async function publishReportSnapshot(params: {
 
 export async function getPublishedSnapshotBySlug(slug: string) {
   const { data, error } = await supabase
-    .from('public_report_snapshots')
-    .select('*')
-    .eq('slug', slug)
-    .is('revoked_at', null)
-    .single();
+    .rpc('get_public_report_snapshot', { p_slug: slug });
 
-  if (error) {
+  if (!error) return (data || null) as PublicReportSnapshot | null;
+
+  if (!isMissingPostgrestFunction(error, 'get_public_report_snapshot')) {
     appLogger.warn('release', 'FETCH_PUBLIC_SNAPSHOT_FAILED', 'Failed to fetch public snapshot.', { error, meta: { slug } });
     return null;
   }
 
-  return data as PublicReportSnapshot;
+  // Development deploys before the hardening migration. This fallback remains
+  // usable only while the legacy public table policy still exists.
+  const { data: legacyData, error: legacyError } = await supabase
+    .from('public_report_snapshots')
+    .select('*')
+    .eq('slug', slug)
+    .is('revoked_at', null)
+    .maybeSingle();
+
+  if (legacyError) {
+    appLogger.warn('release', 'FETCH_PUBLIC_SNAPSHOT_LEGACY_FAILED', 'Failed to fetch the pre-migration public snapshot.', {
+      error: legacyError,
+      meta: { slug }
+    });
+    return null;
+  }
+
+  return (legacyData || null) as PublicReportSnapshot | null;
 }
 
 export async function getPublishedSnapshotByReportId(reportId: string) {
@@ -120,6 +174,8 @@ export async function getPublishedSnapshotByReportId(reportId: string) {
     .select('*')
     .eq('report_id', reportId)
     .is('revoked_at', null)
+    .order('published_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   if (error) {

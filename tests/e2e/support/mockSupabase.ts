@@ -114,6 +114,25 @@ interface MockStoryExportJob {
   updated_at: string;
 }
 
+interface MockAdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'standard' | 'superadmin';
+  subscriptionPlan: 'free' | 'pro' | 'enterprise';
+  status: 'active' | 'suspended' | 'invited';
+  accessStatus: 'active' | 'suspended';
+  createdAt: string;
+  lastSignInAt: string | null;
+  invitedAt: string | null;
+  emailConfirmedAt: string | null;
+  datasets: number;
+  reports: number;
+  stories: number;
+  limits: { maxDatasets: number | null; maxReportsPerDataset: number | null; maxWidgetsPerReport: number };
+  isCurrentUser: boolean;
+}
+
 interface MockState {
   user: {
     id: string;
@@ -122,12 +141,18 @@ interface MockState {
     app_metadata: { provider: string; providers: string[] };
     aud: string;
   };
+  accountRole: 'standard' | 'superadmin';
+  adminUsers: MockAdminUser[];
   datasets: MockDataset[];
   reports: MockReport[];
   snapshots: MockSnapshot[];
   stories: MockStory[];
   storySnapshots: MockStorySnapshot[];
   storyExportJobs: MockStoryExportJob[];
+  storageObjects: Map<string, { body: Buffer; contentType: string }>;
+  datasetQueries: string[];
+  datasetQueryFailuresRemaining: number;
+  storageReadDelayMs: number;
   networkErrors: string[];
   consoleErrors: string[];
 }
@@ -147,6 +172,31 @@ function parseBody(text: string | null) {
   } catch {
     return null;
   }
+}
+
+async function readStorageUpload(request: import('@playwright/test').Request) {
+  const body = request.postDataBuffer() || Buffer.from('');
+  const requestContentType = (await request.headerValue('content-type')) || 'application/octet-stream';
+  if (!requestContentType.startsWith('multipart/form-data')) {
+    return { body, contentType: requestContentType };
+  }
+
+  const filePart = body.indexOf(Buffer.from('filename="'));
+  const headerEnd = filePart >= 0 ? body.indexOf(Buffer.from('\r\n\r\n'), filePart) : -1;
+  const boundary = requestContentType.match(/boundary=([^;]+)/i)?.[1];
+  const payloadEnd = boundary && headerEnd >= 0
+    ? body.indexOf(Buffer.from(`\r\n--${boundary}`), headerEnd + 4)
+    : -1;
+  if (filePart < 0 || headerEnd < 0 || payloadEnd <= headerEnd) {
+    return { body, contentType: 'application/octet-stream' };
+  }
+
+  const partHeaders = body.subarray(filePart, headerEnd).toString('utf8');
+  const partContentType = partHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim();
+  return {
+    body: body.subarray(headerEnd + 4, payloadEnd),
+    contentType: partContentType || 'application/octet-stream'
+  };
 }
 
 function splitSelectItems(selectClause: string) {
@@ -316,6 +366,11 @@ async function handleRestRoute(route: Route, state: MockState) {
   }
 
   if (pathname.includes('/auth/v1/user')) {
+    if (method === 'PUT') {
+      const body = parseBody(request.postData()) as { email?: string; data?: { full_name?: string } } | null;
+      if (body?.data?.full_name) state.user.user_metadata.full_name = body.data.full_name;
+      if (body?.email) state.user.email = body.email;
+    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.user) });
     return;
   }
@@ -341,18 +396,87 @@ async function handleRestRoute(route: Route, state: MockState) {
     return;
   }
 
+  if (pathname.includes('/storage/v1/object/public/files/') && method === 'GET') {
+    if (state.storageReadDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, state.storageReadDelayMs));
+    }
+    const objectPath = decodeURIComponent(pathname.split('/storage/v1/object/public/files/')[1] || '');
+    const object = state.storageObjects.get(objectPath);
+    if (!object) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Object not found' }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: object.contentType, body: object.body });
+    return;
+  }
+
+  if (pathname.includes('/storage/v1/object/sign/files/')) {
+    const objectPath = decodeURIComponent(pathname.split('/storage/v1/object/sign/files/')[1] || '');
+    if (method === 'POST') {
+      const signedURL = `/storage/v1/object/sign/files/${encodeURI(objectPath)}?token=qa-signed-token`;
+      await route.fulfill({
+        status: state.storageObjects.has(objectPath) ? 200 : 404,
+        contentType: 'application/json',
+        body: JSON.stringify(state.storageObjects.has(objectPath)
+          ? { signedURL }
+          : { message: 'Object not found' })
+      });
+      return;
+    }
+    if (method === 'GET') {
+      if (state.storageReadDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, state.storageReadDelayMs));
+      }
+      const object = state.storageObjects.get(objectPath);
+      if (!object) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Object not found' }) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: object.contentType, body: object.body });
+      return;
+    }
+  }
+
   if (pathname.includes('/storage/v1/object/files/')) {
+    if (method === 'POST' || method === 'PUT') {
+      const objectPath = decodeURIComponent(pathname.split('/storage/v1/object/files/')[1] || '');
+      state.storageObjects.set(objectPath, await readStorageUpload(request));
+    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ Key: pathname }) });
     return;
   }
 
   if (pathname.includes('/rest/v1/datasets') && method === 'HEAD') {
-    await route.fulfill({ status: 200, headers: { 'content-range': '0-0/0' }, body: '' });
+    const userFilter = url.searchParams.get('user_id');
+    let datasets = state.datasets;
+    if (userFilter?.startsWith('eq.')) datasets = datasets.filter((dataset) => dataset.user_id === userFilter.slice(3));
+    const end = Math.max(0, datasets.length - 1);
+    await route.fulfill({
+      status: 200,
+      headers: {
+        'content-range': `0-${end}/${datasets.length}`,
+        'access-control-expose-headers': 'content-range'
+      },
+      body: ''
+    });
     return;
   }
 
   if (pathname.includes('/rest/v1/reports') && method === 'HEAD') {
-    await route.fulfill({ status: 200, headers: { 'content-range': '0-0/0' }, body: '' });
+    const datasetFilter = url.searchParams.get('dataset_id');
+    const userFilter = url.searchParams.get('user_id');
+    let reports = state.reports;
+    if (datasetFilter?.startsWith('eq.')) reports = reports.filter((report) => report.dataset_id === datasetFilter.slice(3));
+    if (userFilter?.startsWith('eq.')) reports = reports.filter((report) => report.user_id === userFilter.slice(3));
+    const end = Math.max(0, reports.length - 1);
+    await route.fulfill({
+      status: 200,
+      headers: {
+        'content-range': `0-${end}/${reports.length}`,
+        'access-control-expose-headers': 'content-range'
+      },
+      body: ''
+    });
     return;
   }
 
@@ -364,17 +488,44 @@ async function handleRestRoute(route: Route, state: MockState) {
     return;
   }
 
+  if (pathname.includes('/rest/v1/user_roles')) {
+    if (method !== 'GET') {
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: '42501', message: 'permission denied for table user_roles' })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{ user_id: state.user.id, role: state.accountRole }])
+    });
+    return;
+  }
+
   if (pathname.includes('/rest/v1/reports') && method === 'GET') {
     const datasetFilter = url.searchParams.get('dataset_id');
     const reportIdFilter = url.searchParams.get('id');
+    const userFilter = url.searchParams.get('user_id');
     let result = state.reports;
     if (datasetFilter?.startsWith('eq.')) result = result.filter((report) => report.dataset_id === datasetFilter.slice(3));
     if (reportIdFilter?.startsWith('eq.')) result = result.filter((report) => report.id === reportIdFilter.slice(3));
+    if (userFilter?.startsWith('eq.')) result = result.filter((report) => report.user_id === userFilter.slice(3));
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(result) });
     return;
   }
 
   if (pathname.includes('/rest/v1/datasets') && method === 'POST') {
+    if (state.accountRole !== 'superadmin' && state.datasets.filter((dataset) => dataset.user_id === state.user.id).length >= 3) {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'P0001', message: 'DATASET_LIMIT_REACHED', details: 'A standard user can have at most 3 datasets.' })
+      });
+      return;
+    }
     const payload = parseBody(request.postData() || '[]') as Array<Partial<MockDataset>>;
     const body = payload[0];
     const saved: MockDataset = {
@@ -399,6 +550,14 @@ async function handleRestRoute(route: Route, state: MockState) {
   if (pathname.includes('/rest/v1/reports') && method === 'POST') {
     const payload = parseBody(request.postData() || '[]') as Array<Partial<MockReport>>;
     const body = payload[0];
+    if (state.accountRole !== 'superadmin' && state.reports.filter((report) => report.user_id === state.user.id && report.dataset_id === body.dataset_id).length >= 3) {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'P0001', message: 'REPORT_LIMIT_REACHED', details: 'A standard user can have at most 3 reports per dataset.' })
+      });
+      return;
+    }
     const report: MockReport = {
       id: (body.id as string) || randomId('report'),
       user_id: state.user.id,
@@ -411,6 +570,16 @@ async function handleRestRoute(route: Route, state: MockState) {
     };
     state.reports = [report, ...state.reports.filter((item) => item.id !== report.id)];
     await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(report) });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/reports') && method === 'PATCH') {
+    const reportIdFilter = url.searchParams.get('id');
+    const reportId = reportIdFilter?.startsWith('eq.') ? reportIdFilter.slice(3) : '';
+    const body = parseBody(request.postData() || '{}') as Partial<MockReport>;
+    state.reports = state.reports.map((report) => report.id === reportId ? { ...report, ...body } : report);
+    const updated = state.reports.find((report) => report.id === reportId) || null;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(updated) });
     return;
   }
 
@@ -627,8 +796,133 @@ async function handleRestRoute(route: Route, state: MockState) {
     return;
   }
 
+  if (pathname.includes('/rest/v1/rpc/get_current_user_limits') && method === 'POST') {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        role: state.accountRole,
+        subscription_plan: 'free',
+        status: 'active',
+        max_datasets: state.accountRole === 'superadmin' ? null : 3,
+        max_reports_per_dataset: state.accountRole === 'superadmin' ? null : 3,
+        max_widgets_per_report: 9
+      })
+    });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/rpc/get_dataset_delete_dependencies') && method === 'POST') {
+    const body = parseBody(request.postData() || '{}') as { p_dataset_id: string };
+    const dataset = state.datasets.find((item) => item.id === body.p_dataset_id && item.user_id === state.user.id);
+    if (!dataset) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: 'null' });
+      return;
+    }
+    const reports = state.reports.filter((report) => report.dataset_id === dataset.id && report.user_id === state.user.id);
+    const stories = state.stories.filter((story) => story.dataset_id === dataset.id && story.user_id === state.user.id);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        report_count: reports.length,
+        report_names: reports.map((report) => report.name),
+        story_count: stories.length,
+        story_names: stories.map((story) => story.title)
+      })
+    });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/rpc/delete_report_lifecycle') && method === 'POST') {
+    const body = parseBody(request.postData() || '{}') as { p_report_id: string };
+    const exists = state.reports.some((report) => report.id === body.p_report_id && report.user_id === state.user.id);
+    if (exists) {
+      state.reports = state.reports.filter((report) => report.id !== body.p_report_id);
+      state.snapshots = state.snapshots.filter((snapshot) => snapshot.report_id !== body.p_report_id);
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(exists) });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/rpc/delete_story_lifecycle') && method === 'POST') {
+    const body = parseBody(request.postData() || '{}') as { p_story_id: string };
+    const exists = state.stories.some((story) => story.id === body.p_story_id && story.user_id === state.user.id);
+    if (exists) {
+      state.stories = state.stories.filter((story) => story.id !== body.p_story_id);
+      state.storySnapshots = state.storySnapshots.filter((snapshot) => snapshot.story_id !== body.p_story_id);
+      state.storyExportJobs = state.storyExportJobs.filter((job) => job.story_id !== body.p_story_id);
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(exists) });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/rpc/delete_dataset_lifecycle') && method === 'POST') {
+    const body = parseBody(request.postData() || '{}') as { p_dataset_id: string };
+    const dataset = state.datasets.find((item) => item.id === body.p_dataset_id && item.user_id === state.user.id);
+    if (!dataset) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: 'null' });
+      return;
+    }
+    const reports = state.reports.filter((report) => report.dataset_id === dataset.id && report.user_id === state.user.id);
+    const stories = state.stories.filter((story) => story.dataset_id === dataset.id && story.user_id === state.user.id);
+    if (reports.length || stories.length) {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'P0001',
+          message: reports.length ? 'DATASET_HAS_REPORTS' : 'DATASET_HAS_STORIES',
+          details: JSON.stringify({
+            report_count: reports.length,
+            report_names: reports.map((report) => report.name),
+            story_count: stories.length,
+            story_names: stories.map((story) => story.title)
+          })
+        })
+      });
+      return;
+    }
+    state.datasets = state.datasets.filter((item) => item.id !== dataset.id);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        file_url: dataset.file_url,
+        normalized_file_url: dataset.normalized_file_url || null,
+        analytics_manifest_url: dataset.analytics_manifest_url || null,
+        export_job_ids: []
+      })
+    });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/rpc/get_public_report_snapshot') && method === 'POST') {
+    const body = parseBody(request.postData() || '{}') as { p_slug?: string };
+    const snapshot = state.snapshots.find((item) => item.slug === body.p_slug && item.revoked_at === null) || null;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+    return;
+  }
+
+  if (pathname.includes('/rest/v1/rpc/get_public_story_snapshot') && method === 'POST') {
+    const body = parseBody(request.postData() || '{}') as { p_slug?: string };
+    const snapshot = state.storySnapshots.find((item) => item.slug === body.p_slug && item.revoked_at === null) || null;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+    return;
+  }
+
   if (pathname.includes('/rest/v1/rpc/run_dataset_query') && method === 'POST') {
     const body = parseBody(request.postData() || '{}') as { p_dataset_id: string; p_query: string };
+    state.datasetQueries.push(`${body.p_dataset_id}\u0000${body.p_query}`);
+    if (state.datasetQueryFailuresRemaining > 0) {
+      state.datasetQueryFailuresRemaining -= 1;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: '57014', message: 'canceling statement due to statement timeout', details: null, hint: null })
+      });
+      return;
+    }
     const dataset = state.datasets.find((item) => item.id === body.p_dataset_id);
     const result = dataset ? executeQuery(body.p_query, dataset) : [];
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(result) });
@@ -639,7 +933,7 @@ async function handleRestRoute(route: Route, state: MockState) {
   await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
 }
 
-export async function createMockSupabaseState() {
+export async function createMockSupabaseState(): Promise<MockState> {
   return {
     user: {
       id: 'user_qa_001',
@@ -648,12 +942,55 @@ export async function createMockSupabaseState() {
       app_metadata: { provider: 'google', providers: ['google'] },
       aud: 'authenticated'
     },
+    accountRole: 'standard',
+    adminUsers: [
+      {
+        id: 'user_qa_001',
+        email: 'qa@sphere.test',
+        name: 'QA User',
+        role: 'standard',
+        subscriptionPlan: 'free',
+        status: 'active',
+        accessStatus: 'active',
+        createdAt: nowIso(),
+        lastSignInAt: nowIso(),
+        invitedAt: null,
+        emailConfirmedAt: nowIso(),
+        datasets: 0,
+        reports: 0,
+        stories: 0,
+        limits: { maxDatasets: 3, maxReportsPerDataset: 3, maxWidgetsPerReport: 9 },
+        isCurrentUser: true
+      },
+      {
+        id: 'user_qa_002',
+        email: 'analista@sphere.test',
+        name: 'Analista Sphere',
+        role: 'standard',
+        subscriptionPlan: 'pro',
+        status: 'active',
+        accessStatus: 'active',
+        createdAt: '2026-07-20T18:00:00.000Z',
+        lastSignInAt: '2026-07-26T18:00:00.000Z',
+        invitedAt: null,
+        emailConfirmedAt: '2026-07-20T18:00:00.000Z',
+        datasets: 2,
+        reports: 4,
+        stories: 1,
+        limits: { maxDatasets: 3, maxReportsPerDataset: 3, maxWidgetsPerReport: 9 },
+        isCurrentUser: false
+      }
+    ],
     datasets: [],
     reports: [],
     snapshots: [],
     stories: [],
     storySnapshots: [],
     storyExportJobs: [],
+    storageObjects: new Map(),
+    datasetQueries: [],
+    datasetQueryFailuresRemaining: 0,
+    storageReadDelayMs: 0,
     networkErrors: [],
     consoleErrors: []
   } satisfies MockState;
@@ -683,5 +1020,168 @@ export async function installMockSupabase(context: BrowserContext, page: Page, s
 
   await context.route(/.*\/(auth|rest|storage)\/v1\/.*/, async (route) => {
     await handleRestRoute(route, state);
+  });
+  await context.route(/.*\/api\/admin\/users(?:\/[^/?]+)?(?:\?.*)?$/, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const authorization = await request.headerValue('authorization');
+    if (!authorization) {
+      await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Debes iniciar sesión.', code: 'AUTHENTICATION_REQUIRED' }) });
+      return;
+    }
+    if (state.accountRole !== 'superadmin') {
+      await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Esta operación requiere acceso SUPERADMIN.', code: 'SUPERADMIN_REQUIRED' }) });
+      return;
+    }
+
+    if (request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ users: state.adminUsers }) });
+      return;
+    }
+
+    if (request.method() === 'POST') {
+      const body = parseBody(request.postData()) as { email: string; name?: string; role: 'standard' | 'superadmin'; subscriptionPlan: 'free' | 'pro' | 'enterprise' };
+      const invited: MockAdminUser = {
+        id: randomId('user'),
+        email: body.email,
+        name: body.name || body.email.split('@')[0],
+        role: body.role,
+        subscriptionPlan: body.subscriptionPlan,
+        status: 'invited',
+        accessStatus: 'active',
+        createdAt: nowIso(),
+        lastSignInAt: null,
+        invitedAt: nowIso(),
+        emailConfirmedAt: null,
+        datasets: 0,
+        reports: 0,
+        stories: 0,
+        limits: {
+          maxDatasets: body.role === 'superadmin' ? null : 3,
+          maxReportsPerDataset: body.role === 'superadmin' ? null : 3,
+          maxWidgetsPerReport: 9
+        },
+        isCurrentUser: false
+      };
+      state.adminUsers.unshift(invited);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ user: invited }) });
+      return;
+    }
+
+    if (request.method() === 'PATCH') {
+      const userId = url.pathname.split('/').pop() || '';
+      const body = parseBody(request.postData()) as { role: 'standard' | 'superadmin'; subscriptionPlan: 'free' | 'pro' | 'enterprise'; status: 'active' | 'suspended' };
+      const current = state.adminUsers.find((user) => user.id === userId);
+      if (!current) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Usuario no encontrado.' }) });
+        return;
+      }
+      if (current.isCurrentUser && (body.role !== current.role || body.status !== current.accessStatus)) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'No puedes cambiar tu propio rol o estado de acceso.', code: 'ADMIN_SELF_ACCESS_CHANGE_FORBIDDEN' }) });
+        return;
+      }
+      const activeSuperadmins = state.adminUsers.filter((user) => user.role === 'superadmin' && user.accessStatus === 'active');
+      if (current.role === 'superadmin' && current.accessStatus === 'active'
+        && (body.role !== 'superadmin' || body.status !== 'active')
+        && activeSuperadmins.length === 1) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'No se puede desactivar o degradar al último SUPERADMIN activo.', code: 'LAST_SUPERADMIN_REQUIRED' }) });
+        return;
+      }
+      Object.assign(current, {
+        role: body.role,
+        subscriptionPlan: body.subscriptionPlan,
+        status: body.status,
+        accessStatus: body.status,
+        limits: {
+          maxDatasets: body.role === 'superadmin' ? null : 3,
+          maxReportsPerDataset: body.role === 'superadmin' ? null : 3,
+          maxWidgetsPerReport: 9
+        }
+      });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ user: current }) });
+      return;
+    }
+
+    await route.fulfill({ status: 405, contentType: 'application/json', body: JSON.stringify({ error: 'Method not allowed' }) });
+  });
+  await context.route(/.*\/api\/account(?:\/billing\/(?:checkout|portal))?(?:\?.*)?$/, async (route) => {
+    const request = route.request();
+    if (!(await request.headerValue('authorization'))) {
+      await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Debes iniciar sesión.' }) });
+      return;
+    }
+    if (new URL(request.url()).pathname.endsWith('/checkout')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: '/?view=settings&billing=success' }) });
+      return;
+    }
+    if (new URL(request.url()).pathname.endsWith('/portal')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: '/?view=settings&billing=portal' }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      user: { id: state.user.id, name: state.user.user_metadata.full_name, email: state.user.email, createdAt: nowIso(), lastSignInAt: nowIso(), pendingEmail: null },
+      role: state.accountRole,
+      subscription: { plan: 'free', source: 'free', status: 'inactive', cancelAtPeriodEnd: false, currentPeriodEnd: null, hasStripeCustomer: false, adminOverride: null },
+      usage: { datasets: state.datasets.length, reports: state.reports.length, stories: state.stories.length },
+      limits: { maxDatasets: state.accountRole === 'superadmin' ? null : 3, maxReportsPerDataset: state.accountRole === 'superadmin' ? null : 3, maxWidgetsPerReport: 9 },
+      deletion: { datasets: state.datasets.length, reports: state.reports.length, stories: state.stories.length, exports: state.storyExportJobs.length, storageArtifacts: state.storageObjects.size, status: 'none' },
+      billingConfigured: false
+    }) });
+  });
+  await context.route(/.*\/api\/lifecycle\/(story|dataset)-artifacts\/.*/, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const storyId = requestUrl.pathname.match(/\/api\/lifecycle\/story-artifacts\/([^/]+)/)?.[1];
+    const datasetId = requestUrl.pathname.match(/\/api\/lifecycle\/dataset-artifacts\/([^/]+)/)?.[1];
+
+    if (storyId) {
+      const exists = state.stories.some((story) => story.id === storyId && story.user_id === state.user.id);
+      if (!exists) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Could not delete Story.' }) });
+        return;
+      }
+      state.stories = state.stories.filter((story) => story.id !== storyId);
+      state.storySnapshots = state.storySnapshots.filter((snapshot) => snapshot.story_id !== storyId);
+      const removed = state.storyExportJobs.filter((job) => job.story_id === storyId).length;
+      state.storyExportJobs = state.storyExportJobs.filter((job) => job.story_id !== storyId);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ deleted: true, removed }) });
+      return;
+    }
+
+    const dataset = state.datasets.find((item) => item.id === datasetId && item.user_id === state.user.id);
+    if (!dataset) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Could not delete dataset.' }) });
+      return;
+    }
+    const reports = state.reports.filter((report) => report.dataset_id === dataset.id && report.user_id === state.user.id);
+    const stories = state.stories.filter((story) => story.dataset_id === dataset.id && story.user_id === state.user.id);
+    if (reports.length || stories.length) {
+      await route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: reports.length
+            ? `No se puede eliminar este dataset porque está siendo utilizado por ${reports.length} reportes. Debes eliminar primero los reportes asociados.`
+            : `No se puede eliminar este dataset porque está siendo utilizado por ${stories.length} Stories. Debes eliminar primero las Stories asociadas.`,
+          dependencies: {
+            report_count: reports.length,
+            report_names: reports.map((report) => report.name),
+            story_count: stories.length,
+            story_names: stories.map((story) => story.title)
+          }
+        })
+      });
+      return;
+    }
+    state.datasets = state.datasets.filter((item) => item.id !== dataset.id);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        file_url: dataset.file_url,
+        normalized_file_url: dataset.normalized_file_url || null,
+        analytics_manifest_url: dataset.analytics_manifest_url || null,
+        removed: 0
+      })
+    });
   });
 }

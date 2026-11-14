@@ -11,6 +11,7 @@ interface StoryExportPayload {
   width: number;
   height: number;
   fps: number;
+  cacheKey?: string;
 }
 
 interface LocalJobStatus {
@@ -59,6 +60,10 @@ export function getMp4Path(jobId: string) {
   return path.join(getJobDir(jobId), 'story.mp4');
 }
 
+export async function deleteExportJobFiles(jobId: string) {
+  await fs.rm(getJobDir(jobId), { recursive: true, force: true });
+}
+
 export async function ensureExportRoot() {
   await fs.mkdir(EXPORT_ROOT, { recursive: true });
 }
@@ -84,7 +89,10 @@ export async function readExportPayload(jobId: string) {
 }
 
 export async function writeLocalJobStatus(jobId: string, status: LocalJobStatus) {
-  await fs.writeFile(getStatusPath(jobId), JSON.stringify(status, null, 2), 'utf8');
+  const statusPath = getStatusPath(jobId);
+  const temporaryPath = `${statusPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await fs.writeFile(temporaryPath, JSON.stringify(status, null, 2), 'utf8');
+  await fs.rename(temporaryPath, statusPath);
 }
 
 export async function readLocalJobStatus(jobId: string) {

@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -19,18 +19,34 @@ import {
   buildStoryExportFrameTimeline,
   getStoryExportProgress,
   shouldPersistStoryExportHeartbeat,
-  STORY_EXPORT_FPS
+  STORY_EXPORT_FPS,
+  STORY_EXPORT_VIEWPORTS
 } from './exportProgress';
 import { getStoryTotalDuration } from './playback';
 import type { MaterializedStory, StoryDefinition, StoryExportJobPhase, StoryOrientation } from './types';
 
-export const STORY_EXPORT_VIEWPORTS: Record<StoryOrientation, { width: number; height: number }> = {
-  landscape: { width: 1920, height: 1080 },
-  portrait: { width: 1080, height: 1920 }
-};
+const STORY_FRAME_JPEG_QUALITY = 90;
 
 function hrtimeMs() {
   return Number(process.hrtime.bigint()) / 1_000_000;
+}
+
+let sharedBrowserPromise: Promise<Browser> | null = null;
+const activeStoryExportJobs = new Set<string>();
+
+async function getSharedBrowser() {
+  if (!sharedBrowserPromise) {
+    sharedBrowserPromise = chromium.launch({ headless: true }).then((browser) => {
+      browser.on('disconnected', () => {
+        sharedBrowserPromise = null;
+      });
+      return browser;
+    }).catch((error) => {
+      sharedBrowserPromise = null;
+      throw error;
+    });
+  }
+  return sharedBrowserPromise;
 }
 
 async function commandExists(command: string) {
@@ -109,7 +125,7 @@ async function writeJobProgress(params: {
   });
 
   if (params.persistRemote && params.accessToken) {
-    await updateJobRecord(params.accessToken, params.jobId, {
+    const remotePatch: Record<string, unknown> = {
       status: params.status,
       phase: params.phase,
       fps: params.fps ?? STORY_EXPORT_FPS,
@@ -125,11 +141,14 @@ async function writeJobProgress(params: {
       output_path: params.outputPath ?? null,
       output_size_bytes: params.outputSizeBytes ?? null,
       error: params.error ?? null,
-      technical_metadata: params.technicalMetadata ?? {},
       started_at: params.startedAt ?? null,
       completed_at: params.completedAt ?? null,
       heartbeat_at: timestamp
-    });
+    };
+    if (params.technicalMetadata !== undefined) {
+      remotePatch.technical_metadata = params.technicalMetadata;
+    }
+    await updateJobRecord(params.accessToken, params.jobId, remotePatch);
   }
 }
 
@@ -142,51 +161,67 @@ export async function queueStoryExportJob(params: {
   accessToken?: string;
   origin: string;
   mockMode?: boolean;
+  cacheKey?: string;
 }) {
-  const viewport = STORY_EXPORT_VIEWPORTS[params.orientation];
-  await ensureExportRoot();
-  await prepareExportJobFiles({
-    jobId: params.jobId,
-    renderToken: params.renderToken,
-    story: params.story,
-    materializedStory: params.materializedStory,
-    orientation: params.orientation,
-    width: viewport.width,
-    height: viewport.height,
-    fps: STORY_EXPORT_FPS
-  });
-
-  await writeLocalJobStatus(params.jobId, {
-    jobId: params.jobId,
-    status: 'queued',
-    phase: 'queued',
-    fps: STORY_EXPORT_FPS,
-    progress: 0,
-    updatedAt: new Date().toISOString()
-  });
-
-  if (!params.mockMode) {
-    await updateJobRecord(params.accessToken, params.jobId, {
-      status: 'queued',
-      phase: 'queued',
-      orientation: params.orientation,
-      fps: STORY_EXPORT_FPS,
-      progress: 0,
-      error: null
-    });
-  }
-
-  void processStoryExportJob({
-    jobId: params.jobId,
-    origin: params.origin,
-    accessToken: params.accessToken,
-    mockMode: params.mockMode
-  }).catch((error) => {
-    appLogger.error('story', 'PROCESS_STORY_EXPORT_JOB_UNHANDLED', 'Unhandled story export processing failure.', {
-      error,
+  if (activeStoryExportJobs.has(params.jobId)) {
+    appLogger.warn('story', 'STORY_EXPORT_ALREADY_QUEUED', 'Duplicate Story export start request ignored.', {
       meta: { jobId: params.jobId }
     });
-  });
+    return;
+  }
+  activeStoryExportJobs.add(params.jobId);
+  const viewport = STORY_EXPORT_VIEWPORTS[params.orientation];
+  try {
+    await ensureExportRoot();
+    await prepareExportJobFiles({
+      jobId: params.jobId,
+      renderToken: params.renderToken,
+      story: params.story,
+      materializedStory: params.materializedStory,
+      orientation: params.orientation,
+      width: viewport.width,
+      height: viewport.height,
+      fps: STORY_EXPORT_FPS,
+      cacheKey: params.cacheKey
+    });
+
+    await writeLocalJobStatus(params.jobId, {
+      jobId: params.jobId,
+      status: 'queued',
+      phase: 'queued',
+      fps: STORY_EXPORT_FPS,
+      progress: 0,
+      updatedAt: new Date().toISOString()
+    });
+
+    if (!params.mockMode) {
+      await updateJobRecord(params.accessToken, params.jobId, {
+        status: 'queued',
+        phase: 'queued',
+        orientation: params.orientation,
+        fps: STORY_EXPORT_FPS,
+        progress: 0,
+        error: null
+      });
+    }
+
+    void processStoryExportJob({
+      jobId: params.jobId,
+      origin: params.origin,
+      accessToken: params.accessToken,
+      mockMode: params.mockMode
+    }).catch((error) => {
+      appLogger.error('story', 'PROCESS_STORY_EXPORT_JOB_UNHANDLED', 'Unhandled story export processing failure.', {
+        error,
+        meta: { jobId: params.jobId }
+      });
+    }).finally(() => {
+      activeStoryExportJobs.delete(params.jobId);
+    });
+  } catch (error) {
+    activeStoryExportJobs.delete(params.jobId);
+    throw error;
+  }
 }
 
 export async function processStoryExportJob(params: {
@@ -204,8 +239,9 @@ export async function processStoryExportJob(params: {
   }
 
   const startedAt = new Date().toISOString();
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
-  let page: Awaited<ReturnType<Awaited<ReturnType<typeof chromium.launch>>['newPage']>> | null = null;
+  const pipelineStartedMs = hrtimeMs();
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
   await writeJobProgress({
     jobId: params.jobId,
     accessToken: params.accessToken,
@@ -260,14 +296,15 @@ export async function processStoryExportJob(params: {
       throw new Error('FFmpeg is not available in the current environment.');
     }
 
-    browser = await chromium.launch({ headless: true });
-    page = await browser.newPage({
+    const browser = await getSharedBrowser();
+    context = await browser.newContext({
       viewport: {
         width: payload.width,
         height: payload.height
       },
       deviceScaleFactor: 1
     });
+    page = await context.newPage();
 
     const renderUrl = new URL(`/story/render/${payload.jobId}`, params.origin);
     renderUrl.searchParams.set('token', payload.renderToken);
@@ -276,8 +313,11 @@ export async function processStoryExportJob(params: {
     renderUrl.searchParams.set('timeMs', '0');
 
     await page.goto(renderUrl.toString(), { waitUntil: 'networkidle' });
+    await page.addStyleTag({ content: 'nextjs-portal { display: none !important; }' });
     await page.waitForSelector('[data-story-ready="true"]');
     await page.waitForFunction(() => Boolean(window.__SPHERE_STORY_RENDER__));
+    await page.evaluate(() => document.fonts.ready);
+    const initializationTimeMs = Math.round(hrtimeMs() - pipelineStartedMs);
 
     const totalDurationMsRaw = await page.locator('[data-story-ready="true"]').getAttribute('data-story-total-duration-ms');
     const totalDurationMsRawNumber = Number(totalDurationMsRaw || 0);
@@ -305,7 +345,11 @@ export async function processStoryExportJob(params: {
       progress: 0,
       technicalMetadata: {
         width: payload.width,
-        height: payload.height
+        height: payload.height,
+        cacheKey: payload.cacheKey,
+        initializationTimeMs,
+        frameFormat: 'jpeg',
+        frameQuality: STORY_FRAME_JPEG_QUALITY
       },
       persistRemote: !params.mockMode
     });
@@ -317,14 +361,12 @@ export async function processStoryExportJob(params: {
         if (!api) {
           throw new Error('Story render API is not available.');
         }
-        api.setTimeMs(nextTimeMs);
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await api.renderFrame(nextTimeMs);
       }, timeMs);
-      await page.waitForSelector('[data-testid="story-frame"]');
       peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
 
-      const framePath = path.join(getFramesDir(payload.jobId), `frame-${String(frameIndex + 1).padStart(4, '0')}.png`);
-      await page.locator('[data-testid="story-frame"]').screenshot({ path: framePath });
+      const framePath = path.join(getFramesDir(payload.jobId), `frame-${String(frameIndex + 1).padStart(4, '0')}.jpg`);
+      await page.screenshot({ path: framePath, type: 'jpeg', quality: STORY_FRAME_JPEG_QUALITY, fullPage: false });
       lastRenderedFrame = frameIndex + 1;
 
       if (shouldPersistStoryExportHeartbeat(frameIndex, frameCount)) {
@@ -342,7 +384,11 @@ export async function processStoryExportJob(params: {
           progress: getStoryExportProgress(lastRenderedFrame, frameCount),
           technicalMetadata: {
             width: payload.width,
-            height: payload.height
+            height: payload.height,
+            cacheKey: payload.cacheKey,
+            initializationTimeMs,
+            frameFormat: 'jpeg',
+            frameQuality: STORY_FRAME_JPEG_QUALITY
           },
           persistRemote: !params.mockMode
         });
@@ -367,7 +413,11 @@ export async function processStoryExportJob(params: {
       technicalMetadata: {
         width: payload.width,
         height: payload.height,
-        peakRssBytes
+        peakRssBytes,
+        cacheKey: payload.cacheKey,
+        initializationTimeMs,
+        frameFormat: 'jpeg',
+        frameQuality: STORY_FRAME_JPEG_QUALITY
       },
       persistRemote: !params.mockMode
     });
@@ -380,11 +430,23 @@ export async function processStoryExportJob(params: {
     const completedAt = new Date().toISOString();
     const fileName = `${sanitizeFileName(payload.story.title || 'sphere-story')}-${payload.orientation}.mp4`;
 
+    const cleanupStartedMs = hrtimeMs();
+    await fs.rm(getFramesDir(payload.jobId), { recursive: true, force: true });
+    const frameCleanupTimeMs = Math.round(hrtimeMs() - cleanupStartedMs);
     const metadata = {
       width: payload.width,
       height: payload.height,
       peakRssBytes,
-      stderrText
+      stderrText,
+      cacheKey: payload.cacheKey,
+      initializationTimeMs,
+      frameFormat: 'jpeg',
+      frameQuality: STORY_FRAME_JPEG_QUALITY,
+      artifactStorage: 'local-filesystem',
+      artifactPersistenceTimeMs: 0,
+      uploadTimeMs: 0,
+      frameCleanupTimeMs,
+      totalPipelineTimeMs: Math.round(hrtimeMs() - pipelineStartedMs)
     };
 
     await writeJobProgress({
@@ -430,7 +492,7 @@ export async function processStoryExportJob(params: {
     });
   } finally {
     await page?.close().catch(() => undefined);
-    await browser?.close().catch(() => undefined);
+    await context?.close().catch(() => undefined);
   }
 }
 
@@ -447,7 +509,7 @@ function sanitizeFileName(value: string) {
 }
 
 async function encodeMp4(jobId: string) {
-  const inputPattern = path.join(getFramesDir(jobId), 'frame-%04d.png');
+  const inputPattern = path.join(getFramesDir(jobId), 'frame-%04d.jpg');
   const mp4Path = getMp4Path(jobId);
   const startedAt = hrtimeMs();
   let stderrText = '';
@@ -458,6 +520,8 @@ async function encodeMp4(jobId: string) {
       '-framerate', String(STORY_EXPORT_FPS),
       '-i', inputPattern,
       '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '18',
       '-pix_fmt', 'yuv420p',
       '-movflags', '+faststart',
       mp4Path

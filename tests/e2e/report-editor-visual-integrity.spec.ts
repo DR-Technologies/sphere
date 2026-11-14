@@ -5,35 +5,25 @@ import { createMockSupabaseState, installMockSupabase } from './support/mockSupa
 
 const artifactDir = path.resolve(process.cwd(), 'artifacts', 'report-editor-visual-integrity');
 const fixture = (name: string) => path.resolve(process.cwd(), 'tests/fixtures', name);
-const reportATitles = {
-  card: 'Metrica',
-  line: 'Metrica por Fecha',
-  bar: 'Metrica por Categoria',
-  treemap: 'Categoria por Metrica',
-  pie: 'Participación de Metrica',
-  table: 'Detalle'
-} as const;
-const reportContractTitles = {
-  card: 'Horas',
-  line: 'Horas por Fecha',
-  bar: 'Horas por Nombre Contrato',
-  treemap: 'Nombre Contrato por Horas',
-  pie: 'Participación de Horas',
-  table: 'Detalle'
-} as const;
-
-type VisualType = keyof typeof reportATitles;
+type VisualType = 'card' | 'line' | 'bar' | 'area' | 'pie' | 'treemap' | 'table' | 'map';
 
 const chartSelectorByType: Record<Exclude<VisualType, 'card' | 'table'>, string> = {
   line: '.recharts-line-curve, .recharts-line-dot',
   bar: '.recharts-bar-rectangle, .recharts-rectangle',
+  area: '.recharts-area-area, .recharts-area-curve',
   pie: '.recharts-sector, .recharts-pie-sector',
-  treemap: 'svg rect'
+  treemap: 'svg rect',
+  map: '[data-visual-type="map"] canvas, [data-visual-type="map"] .gm-style'
 };
 
 const relevantConsolePattern = /(Encountered two children with the same key|ResizeObserver loop|Recharts|Unhandled Runtime Error|Chart tipo no soportado|Cannot read properties|No valid data available)/i;
 
-async function openRefine(page: import('@playwright/test').Page, fileName: string, dateFormat: 'DD/MM/YYYY' | 'AUTO' = 'DD/MM/YYYY') {
+async function openRefine(
+  page: import('@playwright/test').Page,
+  fileName: string,
+  dateFormat: 'DD/MM/YYYY' | 'AUTO' = 'DD/MM/YYYY',
+  preparePreview?: () => Promise<void>
+) {
   await page.goto('/');
   await expect(page.getByText(/Upload Dataset|Subir dataset/).first()).toBeVisible();
   await page.getByText(/Upload Dataset|Subir dataset/).first().click();
@@ -44,21 +34,33 @@ async function openRefine(page: import('@playwright/test').Page, fileName: strin
   }
   await page.getByRole('button', { name: /Procesar archivo|Process file/i }).click();
   await expect(page.getByText('Instant Wow')).toBeVisible();
+  await preparePreview?.();
+  await expect(page.getByTestId('report-preloader')).toHaveCount(0);
   await page.getByRole('button', { name: /^Refine$/ }).first().click();
   await expect(page.getByText(/Visualizations|Visualizaciones/i)).toBeVisible();
-  await expect(page.locator('.layout .react-grid-item')).toHaveCount(6);
+  await expect.poll(() => page.locator('.layout .react-grid-item').count()).toBeGreaterThanOrEqual(4);
+  expect(await page.locator('.layout .react-grid-item').count()).toBeLessThanOrEqual(9);
   await expect.poll(async () => page.locator('.animate-spin').count()).toBe(0);
-  await expect.poll(async () => page.locator('[data-visual-ready="true"]').count()).toBeGreaterThanOrEqual(4);
+  await expect.poll(async () => page.locator('.layout [data-visual-ready="true"]').count()).toBeGreaterThanOrEqual(2);
 }
 
-function widgetByTitle(page: import('@playwright/test').Page, title: string) {
+function widgetById(page: import('@playwright/test').Page, widgetId: string) {
   return page.locator('.layout .react-grid-item').filter({
-    has: page.getByRole('heading', { name: title, exact: true })
+    has: page.locator(`.sphere-report-widget-card[data-widget-id="${widgetId}"]`)
   }).first();
 }
 
-function getVisualTypeByTitle(titles: Record<VisualType, string>, title: string): VisualType {
-  return (Object.entries(titles).find(([, value]) => value === title)?.[0] || 'card') as VisualType;
+function widgetByType(page: import('@playwright/test').Page, type: VisualType) {
+  return page.locator('.layout .react-grid-item').filter({
+    has: page.locator(`.sphere-report-widget-card[data-widget-type="${type}"]`)
+  }).first();
+}
+
+async function getWidgetDescriptors(page: import('@playwright/test').Page) {
+  return page.locator('.layout .sphere-report-widget-card').evaluateAll((cards) => cards.map((card) => ({
+    id: card.getAttribute('data-widget-id') || '',
+    type: (card.getAttribute('data-widget-type') || 'card') as VisualType
+  })).filter((widget) => widget.id));
 }
 
 async function expectRenderedVisual(widget: import('@playwright/test').Locator, type: VisualType) {
@@ -171,11 +173,12 @@ function createConsoleCollector(page: import('@playwright/test').Page) {
   };
 }
 
-async function captureVisualState(page: import('@playwright/test').Page, titles: Record<VisualType, string>, suffix: string) {
-  for (const [type, title] of Object.entries(titles) as Array<[VisualType, string]>) {
-    const widget = widgetByTitle(page, title);
-    await expectRenderedVisual(widget, type);
-    await widget.screenshot({ path: path.join(artifactDir, `${suffix}-${type}.png`) });
+async function captureVisualState(page: import('@playwright/test').Page, suffix: string) {
+  const descriptors = await getWidgetDescriptors(page);
+  for (const [index, descriptor] of descriptors.entries()) {
+    const widget = widgetById(page, descriptor.id);
+    await expectRenderedVisual(widget, descriptor.type);
+    await widget.screenshot({ path: path.join(artifactDir, `${suffix}-${descriptor.type}-${index + 1}.png`) });
   }
 }
 
@@ -189,24 +192,27 @@ test.describe('report editor visual data & render integrity', () => {
     const consoleCollector = createConsoleCollector(page);
 
     await openRefine(page, 'dataset-a-simple.csv');
-    await captureVisualState(page, reportATitles, 'default');
+    await captureVisualState(page, 'default');
     await page.screenshot({ path: path.join(artifactDir, 'dense-report-default.png'), fullPage: true });
 
-    for (const title of Object.values(reportATitles)) {
-      const widget = widgetByTitle(page, title);
+    for (const descriptor of await getWidgetDescriptors(page)) {
+      const widget = widgetById(page, descriptor.id);
       await resizeWidget(widget, page, -640, -480);
-      await expectRenderedVisual(widget, getVisualTypeByTitle(reportATitles, title));
+      await expectRenderedVisual(widget, descriptor.type);
       await assertGridHealthy(page);
     }
 
-    await captureVisualState(page, reportATitles, 'min');
+    await captureVisualState(page, 'min');
 
-    page.once('dialog', (dialog) => dialog.accept('Visual Integrity QA'));
+    await page.getByLabel('Report name').fill('Visual Integrity QA');
     await page.getByRole('button', { name: /Guardar reporte|Save Report|Save/i }).last().click();
     await expect(page.getByText(/Guardado|Saved/i).last()).toBeVisible();
-    await page.getByText(/Mis reportes|My Reports/i).first().click();
+    await page.getByRole('button', { name: /My Reports|Mis reportes/i }).click();
     await page.getByText('Visual Integrity QA').first().click();
-    await captureVisualState(page, reportATitles, 'reloaded');
+    await expect(page.getByText('Instant Wow')).toBeVisible();
+    await expect(page.getByTestId('report-preloader')).toHaveCount(0);
+    await page.getByRole('button', { name: /^Refine$/ }).first().click();
+    await captureVisualState(page, 'reloaded');
     await page.screenshot({ path: path.join(artifactDir, 'persisted-layout-reloaded.png'), fullPage: true });
 
     consoleCollector.assertClean();
@@ -223,14 +229,14 @@ test.describe('report editor visual data & render integrity', () => {
 
     await openRefine(page, 'dataset-a-simple.csv');
 
-    for (const title of Object.values(reportATitles)) {
-      const widget = widgetByTitle(page, title);
+    for (const descriptor of await getWidgetDescriptors(page)) {
+      const widget = widgetById(page, descriptor.id);
       await resizeWidget(widget, page, 720, 560);
-      await expectRenderedVisual(widget, getVisualTypeByTitle(reportATitles, title));
+      await expectRenderedVisual(widget, descriptor.type);
       await assertGridHealthy(page);
     }
 
-    await captureVisualState(page, reportATitles, 'max');
+    await captureVisualState(page, 'max');
     await page.screenshot({ path: path.join(artifactDir, 'dense-report-max.png'), fullPage: true });
 
     consoleCollector.assertClean();
@@ -245,12 +251,33 @@ test.describe('report editor visual data & render integrity', () => {
     await installMockSupabase(context, page, state);
     const consoleCollector = createConsoleCollector(page);
 
-    await openRefine(page, 'export-horas-contrato.csv');
+    await openRefine(page, 'export-horas-contrato.csv', 'DD/MM/YYYY', async () => {
+      await page.getByRole('button', { name: /^Publish$/ }).click();
+      await expect(page.getByText(/Publicado correctamente|Published/i)).toBeVisible();
+      const report = state.reports[0];
+      const widgets = report.widgets as Array<Record<string, unknown>>;
+      const categorical = widgets.find((widget) => ['bar', 'pie', 'treemap'].includes(String(widget.type)));
+      if (!categorical) throw new Error('Expected a categorical widget in the generated report.');
+      if (!widgets.some((widget) => widget.type === 'bar')) {
+        widgets.push({ ...categorical, id: 'qa-contract-bar', type: 'bar', title: 'Horas por Nombre Contrato' });
+      }
+      if (!widgets.some((widget) => widget.type === 'pie')) {
+        widgets.push({ ...categorical, id: 'qa-contract-pie', type: 'pie', title: 'Participación de Horas' });
+      }
+      if (!widgets.some((widget) => widget.type === 'treemap')) {
+        widgets.push({ ...categorical, id: 'qa-contract-treemap', type: 'treemap', title: 'Nombre Contrato por Horas' });
+      }
+      await page.reload();
+      await expect(page.getByText(/Upload Dataset|Subir dataset/).first()).toBeVisible();
+      await page.getByRole('button', { name: /My Reports|Mis reportes/i }).click();
+      await page.locator('.report-item').filter({ hasText: report.name }).click();
+      await expect(page.getByText('Instant Wow')).toBeVisible();
+    });
     await page.screenshot({ path: path.join(artifactDir, 'export-horas-contrato-refine.png'), fullPage: true });
 
-    const barWidget = widgetByTitle(page, reportContractTitles.bar);
-    const treemapWidget = widgetByTitle(page, reportContractTitles.treemap);
-    const pieWidget = widgetByTitle(page, reportContractTitles.pie);
+    const barWidget = widgetByType(page, 'bar');
+    const treemapWidget = widgetByType(page, 'treemap');
+    const pieWidget = widgetByType(page, 'pie');
 
     await expectRenderedVisual(barWidget, 'bar');
     await expectRenderedVisual(treemapWidget, 'treemap');

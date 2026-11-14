@@ -182,9 +182,8 @@ Responsable de:
 
 ### Falta construir o reforzar
 - enriquecimiento de semantics y recommendation;
-- export pipeline más allá de `PNG`;
-- story/playback engine.
-- persistencia, publicación y export productivo de Story.
+- ejecución distribuida/worker queue para escalar el pipeline MP4 actual;
+- refresh y versionado reutilizable de datasets, fuera del alcance activo.
 
 ## Objetivo M2 aprobado
 
@@ -226,6 +225,38 @@ Separación obligatoria:
 - `stories` persiste metadatos indexables + `story_definition` versionado.
 - `public_story_snapshots` persiste publicación segura con `materialized_story`.
 - `story_export_jobs` persiste el ciclo de export asíncrono y su estado.
+
+### Lifecycle e integridad referencial
+- `datasets` y `reports` son entidades privadas protegidas por RLS owner-scoped. Guardas transaccionales verifican que el owner de un Report sea también owner del Dataset y que un snapshot publicado mantenga consistente `report_id + dataset_id + user_id`.
+- El bucket `files` es privado. La persistencia guarda rutas internas bajo `<user_id>/datasets/...`; la lectura genera URLs firmadas de corta duración y normaliza URLs públicas legacy sin exponer nuevamente el bucket.
+- `datasets` es el aggregate root de datos privados, pero no posee una cascada destructiva sobre producto: si existen Reports o Stories asociados, su eliminación se bloquea en UI, RPC y claves foráneas. Solo un dataset sin dependencias puede eliminarse y limpiar su tabla analítica normalizada.
+- `reports` y `stories` tienen lifecycle propio. Sus snapshots públicos se eliminan con el padre; una Story conserva `source_report_id` solo como referencia opcional y sobrevive a la eliminación del reporte origen.
+- `user_roles` contiene el rol operativo protegido. Un usuario estándar tiene tres datasets y tres reportes por dataset; `superadmin` no tiene esos dos límites. Los triggers transaccionales son la autoridad y el frontend solo anticipa el resultado.
+- El límite de nueve widgets por reporte permanece común a todos los roles.
+- La administración de cuentas separa tres conceptos: `role` controla seguridad, `subscription_plan` registra el nivel administrativo sin facturación y `status` controla acceso activo/suspendido. El plan no modifica por sí mismo los límites V1.
+- El navegador nunca recibe `SUPABASE_SERVICE_ROLE_KEY`. Las rutas `/api/admin/*` validan el JWT y el rol activo, y solo después usan Supabase Auth Admin y RPC restringidas a `service_role`.
+- Una cuenta suspendida se bloquea en Auth, mediante el pre-request de PostgREST y con una política restrictiva de Storage, evitando que una sesión autenticada ya abierta continúe ejecutando operaciones protegidas.
+- `admin_audit_log` registra invitaciones y cambios de acceso; un trigger transaccional bajo advisory lock impide degradar, suspender o eliminar al último SUPERADMIN activo.
+- Solo puede existir un snapshot activo por Report o Story. Republish reutiliza el snapshot activo; revoke lo excluye de cualquier lookup de publicación activa.
+- Los endpoints server-side de Dataset y Story verifican ownership y ejecutan primero el RPC transaccional. Los archivos de dataset en Storage solo se eliminan después del commit de un dataset sin dependencias.
+
+### Cuenta, planes y facturación
+- `Supabase Auth` continúa siendo la autoridad para identidad, correo, contraseña y sesiones. El navegador usa `updateUser`/`reauthenticate`; nunca modifica `auth.users` mediante SQL.
+- La eliminación de cuenta exige un OTP de email verificado por Supabase Auth para el mismo `user.id`. La sesión efímera de verificación se revoca y los retries posteriores usan un token opaco independiente del código de reautenticación.
+- `user_roles.role` y `user_roles.status` controlan seguridad. `admin_plan_override` representa una asignación administrativa explícita y permanece separada del estado comercial.
+- `account_subscriptions` replica únicamente el estado verificado por webhooks de Stripe. El plan efectivo se resuelve con precedencia `admin override -> Stripe active/trialing/past_due -> Free`.
+- Checkout y Customer Portal se crean en rutas server-side. La configuración V1 exige claves `sk_test`; el webhook verifica firma y registra cada `event_id` para procesamiento idempotente.
+- La eliminación de cuenta es un workflow reintentable. Primero suspende el acceso, persiste inventario y token opaco de recuperación; después elimina datos transaccionalmente, limpia Storage/exportaciones y elimina Auth al final. `account_deletion_requests` conserva el estado de recuperación sin depender de la vida de `auth.users`.
+
+### Navegación de Report
+- Abrir un dataset genera un nuevo Instant Wow determinístico.
+- Abrir un Report existente carga su definición persistida en la misma superficie de presentación de Instant Wow, sin regenerar recomendaciones.
+- Refine añade chrome de edición sobre ese Report y puede volver a la previsualización; Save conserva el ID y Save As crea una entidad nueva.
+
+### Ownership visual de themes
+- El App Theme controla exclusivamente el shell: navegación, toolbar, inspector y settings.
+- El Report Template controla stage, cards, charts y tipografía del reporte.
+- El stage de Report posee background y variables visuales propias; un template claro no hereda transparencia ni color del shell oscuro.
 
 ### Responsabilidad a evitar
 - `Dashboard.tsx` no debe transformarse en orquestador de Story domain.

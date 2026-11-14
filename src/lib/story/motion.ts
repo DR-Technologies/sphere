@@ -109,12 +109,12 @@ export const STORY_MOTION_PRESETS: StoryMotionPreset[] = [
 
 export const STORY_PACING_TARGET_MS: Record<StoryPacingPresetId, number> = {
   short: 15_000,
-  standard: 30_000,
+  standard: 22_000,
   extended: 60_000
 };
 
 const SCENE_WEIGHT_BY_KIND: Record<StorySceneKind, number> = {
-  intro: 1.2,
+  intro: 0.75,
   kpi: 1.6,
   evolution: 2.4,
   ranking: 2.1,
@@ -160,7 +160,8 @@ export function createStorySceneTiming(params: {
   const { scene, motionPresetId, pacingPresetId, totalWeight } = params;
   const motionPreset = getStoryMotionPreset(scene.motionPresetId || motionPresetId);
   const durationMs = resolveSceneDurationMs({ scene, pacingPresetId, totalWeight });
-  const enterMs = Math.min(motionPreset.entrance.durationMs, Math.max(250, Math.round(durationMs * 0.24)));
+  const enterRatio = scene.kind === 'intro' ? 0.16 : 0.24;
+  const enterMs = Math.min(motionPreset.entrance.durationMs, Math.max(220, Math.round(durationMs * enterRatio)));
   const exitMs = Math.min(motionPreset.exit.durationMs, Math.max(200, Math.round(durationMs * 0.2)));
   const mainMs = Math.max(0, durationMs - enterMs - exitMs);
   const overlapMs = Math.min(Math.round(exitMs * TRANSITION_OVERLAP_RATIO[scene.transition]), Math.round(durationMs * 0.12));

@@ -8,7 +8,7 @@ import { buildWidgetQueryModel } from '@/lib/analytics/queryModel';
 import { resolveWidgetVisualizationResult } from '@/lib/analytics/widgetResult';
 import type { AnalyticsProvider, DatasetProfileResult } from '@/lib/analytics/types';
 
-type Row = Record<string, string | number | boolean | null>;
+type Row = Record<string, string | number | boolean | null | undefined>;
 
 function splitSelectItems(selectClause: string) {
   const items: string[] = [];

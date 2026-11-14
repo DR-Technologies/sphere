@@ -5,6 +5,7 @@ import {
   STORY_SCHEMA_VERSION,
   type MotionPresetId,
   type StoryDefinition,
+  type StoryLocale,
   type StoryPacingPresetId,
   type StorySceneDefinition
 } from './types';
@@ -46,6 +47,37 @@ function buildSceneCopy(title: string, fallbackSubtitle: string) {
   return {
     title,
     subtitle: fallbackSubtitle
+  };
+}
+
+function getGeneratedStoryCopy(locale: StoryLocale) {
+  if (locale === 'en') {
+    return {
+      introSubtitle: 'An automatic visual story ready to present.',
+      storySubtitle: 'Automatic story created from Quick Result.',
+      kpiSubtitle: (measure: string) => `Overview of ${measure}.`,
+      evolutionTitle: (measure: string, date: string) => `${measure} by ${date}`,
+      evolutionSubtitle: (measure: string) => `Temporal evolution of ${measure}.`,
+      rankingTitle: (category: string, measure: string) => `${category} by ${measure}`,
+      rankingSubtitle: (category: string, measure: string) => `Ranking of ${category} by ${measure}.`,
+      raceTitle: (measure: string) => `${measure} in motion`,
+      raceSubtitle: (category: string, time: string) => `${category} over ${time}.`,
+      compositionTitle: (measure: string) => `Share of ${measure}`,
+      compositionSubtitle: (measure: string, category: string) => `How ${measure} is distributed by ${category}.`
+    };
+  }
+  return {
+    introSubtitle: 'Una historia visual automática lista para presentar.',
+    storySubtitle: 'Historia automática creada desde Quick Result.',
+    kpiSubtitle: (measure: string) => `Visión general de ${measure}.`,
+    evolutionTitle: (measure: string, date: string) => `${measure} por ${date}`,
+    evolutionSubtitle: (measure: string) => `Evolución temporal de ${measure}.`,
+    rankingTitle: (category: string, measure: string) => `${category} por ${measure}`,
+    rankingSubtitle: (category: string, measure: string) => `Ranking de ${category} según ${measure}.`,
+    raceTitle: (measure: string) => `${measure} en movimiento`,
+    raceSubtitle: (category: string, time: string) => `${category} a través de ${time}.`,
+    compositionTitle: (measure: string) => `Participación de ${measure}`,
+    compositionSubtitle: (measure: string, category: string) => `Cómo se distribuye ${measure} por ${category}.`
   };
 }
 
@@ -158,6 +190,8 @@ export function generateAutomaticStory(params: {
   sourceReportId?: string | null;
   motionPresetId?: MotionPresetId;
   pacingPresetId?: StoryPacingPresetId;
+  locale?: StoryLocale;
+  timeZone?: string;
 }): StoryDefinition {
   const {
     dataset,
@@ -166,7 +200,9 @@ export function generateAutomaticStory(params: {
     userId,
     sourceReportId = null,
     motionPresetId = 'smooth',
-    pacingPresetId = 'standard'
+    pacingPresetId = 'standard',
+    locale = 'es',
+    timeZone = 'UTC'
   } = params;
 
   const hints = buildFieldHints(dataset, widgets);
@@ -174,11 +210,12 @@ export function generateAutomaticStory(params: {
   const scenes: StorySceneDefinition[] = [];
   const canShowRace = getRaceCandidate(dataset, hints);
   const canShowComposition = supportsComposition(dataset, hints);
+  const copy = getGeneratedStoryCopy(locale);
 
   pushScene(scenes, {
     kind: 'intro',
     renderer: 'hero-text',
-    ...buildSceneCopy(storyTitle, presentation.subtitle || 'Una historia visual automática lista para presentar.'),
+    ...buildSceneCopy(storyTitle, presentation.subtitle || copy.introSubtitle),
     layout: 'hero',
     transition: 'fade',
     durationMode: 'auto',
@@ -190,7 +227,7 @@ export function generateAutomaticStory(params: {
     pushScene(scenes, {
       kind: 'kpi',
       renderer: 'kpi-counter',
-      ...buildSceneCopy(hints.primaryMeasure, `Visión general de ${hints.primaryMeasure}.`),
+      ...buildSceneCopy(hints.primaryMeasure, copy.kpiSubtitle(hints.primaryMeasure)),
       layout: 'focus',
       transition: 'lift',
       durationMode: 'auto',
@@ -208,7 +245,7 @@ export function generateAutomaticStory(params: {
     pushScene(scenes, {
       kind: 'evolution',
       renderer: 'line-evolution',
-      ...buildSceneCopy(`${hints.primaryMeasure} por ${hints.primaryDate}`, `Evolución temporal de ${hints.primaryMeasure}.`),
+      ...buildSceneCopy(copy.evolutionTitle(hints.primaryMeasure, hints.primaryDate), copy.evolutionSubtitle(hints.primaryMeasure)),
       layout: 'focus',
       transition: 'fade',
       durationMode: 'auto',
@@ -226,7 +263,7 @@ export function generateAutomaticStory(params: {
     pushScene(scenes, {
       kind: 'ranking',
       renderer: 'bar-ranking',
-      ...buildSceneCopy(`${hints.primaryCategory} por ${hints.primaryMeasure}`, `Ranking de ${hints.primaryCategory} según ${hints.primaryMeasure}.`),
+      ...buildSceneCopy(copy.rankingTitle(hints.primaryCategory, hints.primaryMeasure), copy.rankingSubtitle(hints.primaryCategory, hints.primaryMeasure)),
       layout: 'focus',
       transition: 'slide',
       durationMode: 'auto',
@@ -245,7 +282,7 @@ export function generateAutomaticStory(params: {
     pushScene(scenes, {
       kind: 'race',
       renderer: 'bar-race',
-      ...buildSceneCopy(`${canShowRace.measureField} en movimiento`, `${canShowRace.categoryField} a través de ${canShowRace.timeField}.`),
+      ...buildSceneCopy(copy.raceTitle(canShowRace.measureField), copy.raceSubtitle(canShowRace.categoryField, canShowRace.timeField)),
       layout: 'focus',
       transition: 'slide',
       durationMode: 'auto',
@@ -264,7 +301,7 @@ export function generateAutomaticStory(params: {
     pushScene(scenes, {
       kind: 'composition',
       renderer: 'composition-evolution',
-      ...buildSceneCopy(`Participación de ${hints.primaryMeasure}`, `Cómo se distribuye ${hints.primaryMeasure} por ${hints.compositionCategory}.`),
+      ...buildSceneCopy(copy.compositionTitle(hints.primaryMeasure), copy.compositionSubtitle(hints.primaryMeasure, hints.compositionCategory)),
       layout: 'split',
       transition: 'fade',
       durationMode: 'auto',
@@ -291,11 +328,13 @@ export function generateAutomaticStory(params: {
     datasetId: dataset.id,
     sourceReportId,
     title: storyTitle,
-    subtitle: presentation.subtitle || 'Historia automática creada desde Quick Result.',
+    subtitle: presentation.subtitle || copy.storySubtitle,
     templateId: presentation.templateId,
     motionPresetId,
     pacingPresetId,
     orientation: 'landscape',
+    locale,
+    timeZone,
     scenes: limitedScenes
   };
 }

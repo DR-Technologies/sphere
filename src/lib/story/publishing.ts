@@ -1,5 +1,6 @@
 import { appLogger } from '@/lib/logger';
 import { supabase } from '@/lib/supabase';
+import { isMissingPostgrestFunction } from '@/lib/supabaseCompatibility';
 import { materializeStory } from './materialize';
 import type { MaterializedStory, StoryDefinition, StoryPublicationSnapshot } from './types';
 
@@ -63,13 +64,16 @@ export async function publishStorySnapshot(params: {
   materializedStory?: MaterializedStory;
   existingSlug?: string | null;
 }) {
+  const activeSnapshot = !params.existingSlug && params.story.id
+    ? await getPublishedStorySnapshotByStoryId(params.story.id)
+    : null;
   const materializedStory = params.materializedStory || await materializeStory(params.story, {
     columnsMeta: params.columnsMeta
   });
 
   const now = new Date().toISOString();
   const payload = {
-    slug: params.existingSlug || generateSnapshotSlug(),
+    slug: params.existingSlug || activeSnapshot?.slug || generateSnapshotSlug(),
     story_id: params.story.id || null,
     dataset_id: params.story.datasetId,
     user_id: params.story.userId,
@@ -104,18 +108,31 @@ export async function publishStorySnapshot(params: {
 
 export async function getPublishedStorySnapshotBySlug(slug: string) {
   const { data, error } = await supabase
-    .from('public_story_snapshots')
-    .select('*')
-    .eq('slug', slug)
-    .is('revoked_at', null)
-    .single();
+    .rpc('get_public_story_snapshot', { p_slug: slug });
 
-  if (error) {
+  if (!error) return data ? fromStoryPublicationRecord(data as StoryPublicationRecord) : null;
+
+  if (!isMissingPostgrestFunction(error, 'get_public_story_snapshot')) {
     appLogger.warn('story', 'FETCH_PUBLIC_STORY_FAILED', 'Failed to fetch public story snapshot.', { error, meta: { slug } });
     return null;
   }
 
-  return fromStoryPublicationRecord(data as StoryPublicationRecord);
+  const { data: legacyData, error: legacyError } = await supabase
+    .from('public_story_snapshots')
+    .select('*')
+    .eq('slug', slug)
+    .is('revoked_at', null)
+    .maybeSingle();
+
+  if (legacyError) {
+    appLogger.warn('story', 'FETCH_PUBLIC_STORY_LEGACY_FAILED', 'Failed to fetch the pre-migration public Story.', {
+      error: legacyError,
+      meta: { slug }
+    });
+    return null;
+  }
+
+  return legacyData ? fromStoryPublicationRecord(legacyData as StoryPublicationRecord) : null;
 }
 
 export async function getPublishedStorySnapshotByStoryId(storyId: string) {
@@ -124,6 +141,8 @@ export async function getPublishedStorySnapshotByStoryId(storyId: string) {
     .select('*')
     .eq('story_id', storyId)
     .is('revoked_at', null)
+    .order('published_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   if (error) {

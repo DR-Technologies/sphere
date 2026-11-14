@@ -15,11 +15,13 @@ import { supabase } from '@/lib/supabase';
 import type { ReportPresentation } from '@/lib/widgets/types';
 import { buildWidgetQueryModel } from '@/lib/analytics/queryModel';
 import { resolveWidgetVisualizationResult } from '@/lib/analytics/widgetResult';
+import { getDatasetQueryDiagnostics, getDatasetQueryUserMessage } from '@/lib/analytics/queryError';
 import { getQuickResultTemplate, type QuickResultTemplate } from '@/lib/quickResult/templates';
 import { getPresentationWidgetLayout } from '@/lib/quickResult/layout';
 import ReportWidgetCard from '@/components/presentation/ReportWidgetCard';
 import { normalizeReportWidgets } from '@/lib/reportLayout';
 import { isSphereQaStaticRender } from '@/lib/qa';
+import { getPublishedSnapshotByReportId, getPublicReportUrl, type PublicReportSnapshot } from '@/lib/publishing';
 import {
     getWidgetDefaultSize,
     getWidgetSizePolicy,
@@ -91,8 +93,10 @@ interface ReportCanvasProps {
     initialPresentation?: ReportPresentation;
     savedDatasets?: SavedDataset[];
     onReportDeleted?: () => void;
+    onReportSaved?: (report: SavedReport) => void;
     onChangesStatusChange?: (hasChanges: boolean) => void;
     onSwitchDataset?: (dataset: SavedDataset) => void;
+    onBackToPreview?: () => void;
 }
 
 const NUMERIC_COLUMN_TYPES = new Set(['INTEGER', 'BIGINT', 'DOUBLE', 'DECIMAL', 'NUMERIC', 'REAL', 'SMALLINT']);
@@ -255,6 +259,7 @@ function sanitizeWidgetForType(widget: Widget, nextType: ChartType, dataset: Rep
         w: widget.w,
         h: widget.h,
         type: nextType,
+        aggregation: widget.aggregation || defaults.aggregation || 'SUM',
         xAxis: isExistingColumn(dataset.columns, widget.xAxis) ? widget.xAxis : (defaults.xAxis || ''),
         yAxis: isExistingColumn(dataset.columns, widget.yAxis) ? widget.yAxis : (defaults.yAxis || ''),
         showWidgetTitle: widget.showWidgetTitle ?? true,
@@ -411,10 +416,12 @@ const WidgetCard = React.memo(({
     const [data, setData] = useState<Record<string, any>[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [retryKey, setRetryKey] = useState(0);
     const configIssue = React.useMemo(() => getWidgetConfigIssue(widget, columnsMeta), [widget, columnsMeta]);
     const qaStaticRender = React.useMemo(() => isSphereQaStaticRender(), []);
 
     useEffect(() => {
+        let cancelled = false;
         const fetchData = async () => {
             if (configIssue) {
                 setLoading(false);
@@ -439,8 +446,10 @@ const WidgetCard = React.memo(({
                 }
 
                 const result = await resolveWidgetVisualizationResult(built.model, columnsMeta as any, datasetId);
-                setData(result.rows);
-                setError(result.issue);
+                if (!cancelled) {
+                    setData(result.rows);
+                    setError(result.issue);
+                }
             } catch (err: unknown) {
                 appLogger.error('analytics', 'WIDGET_QUERY_FAILED', 'Failed to fetch widget data.', {
                     error: err,
@@ -449,24 +458,21 @@ const WidgetCard = React.memo(({
                         widgetType: widget.type,
                         aggregation: widget.aggregation,
                         xAxis: widget.xAxis,
-                        yAxis: widget.yAxis
+                        yAxis: widget.yAxis,
+                        ...getDatasetQueryDiagnostics(err)
                     }
                 });
-                const msg = getErrorMessage(err, '');
-                if (msg.includes('No function matches')) {
-                    setError(`Aggregation ${widget.aggregation} not supported for this column type.`);
-                } else if (msg.includes('requires a numeric column')) {
-                    setError(`"${widget.yAxis}" debe ser una columna numérica para usar ${widget.aggregation}.`);
-                } else {
-                    setError('No se pudo cargar el widget. Revisa que los campos y la agregación sean compatibles.');
-                }
+                if (!cancelled) setError(getDatasetQueryUserMessage(err));
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         };
 
         fetchData();
-    }, [configIssue, widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.colorScheme, widget.customColor, widget.colorByCategory, widget.orientation, widget.columnAggregations, widget.latitudeField, widget.longitudeField, datasetId]);
+        return () => {
+            cancelled = true;
+        };
+    }, [configIssue, widget.xAxis, widget.yAxis, widget.aggregation, widget.columns, widget.type, widget.orderBy, widget.topN, globalFilters, widget.columnAggregations, widget.latitudeField, widget.longitudeField, datasetId, retryKey]);
 
     const layout = getPresentationWidgetLayout(widget as unknown as import('@/lib/widgets/types').Widget);
 
@@ -477,6 +483,14 @@ const WidgetCard = React.memo(({
                 template={template}
                 layout={layout}
                 error={error}
+                errorAction={error ? (
+                    <button type="button" className="btn-secondary" onClick={(event) => {
+                        event.stopPropagation();
+                        setRetryKey((current) => current + 1);
+                    }}>
+                        Reintentar
+                    </button>
+                ) : null}
                 style={isActive ? { boxShadow: `0 0 0 1px ${template.accent}, 0 18px 38px rgba(3, 7, 18, 0.26)` } : undefined}
             >
                 {loading ? (
@@ -571,15 +585,17 @@ const WidgetCard = React.memo(({
 });
 WidgetCard.displayName = 'WidgetCard';
 
-const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string }, ReportCanvasProps>(({
+const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Promise<boolean>; reportName: string }, ReportCanvasProps>(({
     dataset,
     initialReportId,
     initialWidgets = [],
     initialPresentation,
     savedDatasets = [],
     onReportDeleted,
+    onReportSaved,
     onChangesStatusChange,
-    onSwitchDataset
+    onSwitchDataset,
+    onBackToPreview
 }, ref) => {
     const { t } = useTranslation();
     const [width, setWidth] = useState(1200);
@@ -647,6 +663,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const [user, setUser] = useState<any>(null); // Supabase User type can be complex, using any temporarily but scoped
     const [reportId, setReportId] = useState<string | null>(initialReportId || null);
     const [reportName, setReportName] = useState(initialPresentation?.title || dataset.name);
+    const hasLocalReportNameEdit = React.useRef(false);
     const activeTemplate = React.useMemo(
         () => getQuickResultTemplate(initialPresentation?.templateId || 'modern'),
         [initialPresentation?.templateId]
@@ -656,10 +673,11 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     const [lastSavedState, setLastSavedState] = useState<string>('');
     const [globalFilters, setGlobalFilters] = useState<GlobalFilter[]>([]);
     const [isCopied, setIsCopied] = useState(false);
+    const [activePublication, setActivePublication] = useState<PublicReportSnapshot | null>(null);
     const [openSettingsSection, setOpenSettingsSection] = useState<WidgetSettingsSection>(null);
 
     const handleCopyURL = () => {
-        const url = reportId ? `${typeof window !== 'undefined' ? window.location.origin : ''}/report/${reportId}` : '';
+        const url = activePublication ? getPublicReportUrl(activePublication.slug) : '';
         if (url) {
             navigator.clipboard.writeText(url).then(() => {
                 setIsCopied(true);
@@ -667,6 +685,17 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
             });
         }
     };
+
+    useEffect(() => {
+        let cancelled = false;
+        setActivePublication(null);
+        if (!reportId) return undefined;
+
+        getPublishedSnapshotByReportId(reportId).then((snapshot) => {
+            if (!cancelled) setActivePublication(snapshot);
+        });
+        return () => { cancelled = true; };
+    }, [reportId]);
 
     // Expose methods to parent
     React.useImperativeHandle(ref, () => ({
@@ -724,6 +753,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
     // 2. Load Report Data
     const userId = user?.id;
     useEffect(() => {
+        hasLocalReportNameEdit.current = false;
         const normalizedInitialWidgets = normalizeReportWidgets(
             initialWidgets.map((widget) => normalizeWidgetForCanvas(widget, dataset))
         );
@@ -744,7 +774,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                     setWidgets(sanitizedWidgets);
                     setGlobalFilters(existingReport.filters || []);
                     setReportId(existingReport.id);
-                    setReportName(existingReport.name);
+                    if (!hasLocalReportNameEdit.current) setReportName(existingReport.name);
                     setLastSaved(new Date((existingReport as any).updated_at || existingReport.created_at));
                     setLastSavedState(JSON.stringify({
                         widgets: sanitizedWidgets,
@@ -760,6 +790,12 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                     setReportName(initialPresentation?.title || dataset.name);
                     setLastSavedState(JSON.stringify({ widgets: normalizedInitialWidgets, reportName: initialPresentation?.title || dataset.name, globalFilters: [] }));
                 }
+            }).catch((error) => {
+                appLogger.error('analytics', 'LOAD_REPORT_IN_CANVAS_FAILED', 'Failed to load the selected report in Refine.', {
+                    error,
+                    meta: { reportId: initialReportId, datasetId: dataset.id }
+                });
+                alert('No se pudo cargar el reporte seleccionado.');
             });
         } else {
             // New report mode - clear everything
@@ -772,22 +808,27 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
         }
     }, [dataset.id, initialPresentation?.title, initialReportId, initialWidgets, dataset.name, userId]);
     const handleSave = async (isSaveAs: boolean = false) => {
-        if (!user || !dataset.id) return;
+        if (!user || !dataset.id) return false;
 
         let nameToSave = reportName;
         const isNewReport = !reportId || isSaveAs;
 
         if (isNewReport) {
-            const canCreate = await checkReportLimit(dataset.id);
-            if (!canCreate) {
-                alert('Límite de reportes por dataset alcanzado (3).');
-                return;
+            try {
+                const canCreate = await checkReportLimit(dataset.id, user.id);
+                if (!canCreate) {
+                    alert('No se puede continuar. Este dataset ya alcanzó el límite de 3 reportes.');
+                    return false;
+                }
+            } catch (error) {
+                alert(getErrorMessage(error, 'No se pudo validar el límite de reportes.'));
+                return false;
             }
 
             const name = prompt(t('canvas.report_name_prompt'), isSaveAs ? `${reportName} (Copy)` : reportName);
             if (!name || name.trim() === '') {
                 alert(t('canvas.report_name_required'));
-                return;
+                return false;
             }
             nameToSave = name.trim();
         }
@@ -823,15 +864,18 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 }));
                 setHasUnsavedChanges(false);
                 onChangesStatusChange?.(false);
+                onReportSaved?.(saved as SavedReport);
             }
             setLastSaved(new Date());
             setIsReportSettingsOpen(false);
+            return Boolean(saved?.id);
         } catch (err) {
             appLogger.error('analytics', 'SAVE_REPORT_FROM_CANVAS_FAILED', 'Failed to save report from canvas.', {
                 error: err,
                 meta: { datasetId: dataset.id, reportId }
             });
-            alert('Failed to save report.');
+            alert(getErrorMessage(err, 'No se pudo guardar el reporte.'));
+            return false;
         } finally {
             setIsSaving(false);
         }
@@ -1585,7 +1629,7 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                 <input
                                                     type="text"
                                                     readOnly
-                                                    value={reportId ? `${typeof window !== 'undefined' ? window.location.origin : ''}/report/${reportId}` : t('canvas.no_widgets')}
+                                                    value={activePublication ? getPublicReportUrl(activePublication.slug) : 'No publicado'}
                                                     style={{
                                                         width: '100%',
                                                         padding: '10px',
@@ -1600,21 +1644,21 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                                                 />
                                                 <button
                                                     onClick={handleCopyURL}
-                                                    disabled={!reportId}
+                                                    disabled={!activePublication}
                                                     style={{
                                                         position: 'absolute',
                                                         right: '8px',
                                                         background: isCopied ? 'rgba(34, 211, 238, 0.1)' : 'transparent',
                                                         border: 'none',
                                                         color: isCopied ? 'var(--accent)' : 'var(--text-muted)',
-                                                        cursor: reportId ? 'pointer' : 'default',
+                                                        cursor: activePublication ? 'pointer' : 'default',
                                                         padding: '6px',
                                                         borderRadius: '6px',
                                                         display: 'flex',
                                                         alignItems: 'center',
                                                         justifyContent: 'center',
                                                         transition: 'all 0.2s',
-                                                        opacity: reportId ? 1 : 0.5
+                                                        opacity: activePublication ? 1 : 0.5
                                                     }}
                                                     title={t('canvas.copy_url')}
                                                 >
@@ -1876,17 +1920,50 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
                 }}>
                     {/* Header with Report Name */}
                     <div style={{ marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
-                        <div>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', minWidth: 0 }}>
+                            {onBackToPreview ? (
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    aria-label="Volver a la previsualización"
+                                    title="Volver a la previsualización"
+                                    onClick={onBackToPreview}
+                                    style={{ padding: '8px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                                >
+                                    <ChevronLeft size={18} />
+                                </button>
+                            ) : null}
+                            <div style={{ minWidth: 0 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', color: 'var(--primary)' }}>
                                 <SphereIcon size={16} />
                                 <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{t('sidebar.reports')}</span>
                             </div>
-                            <h2 style={{ fontSize: '1.55rem', fontWeight: 700 }}>{reportName}</h2>
+                            <input
+                                aria-label="Report name"
+                                value={reportName}
+                                onChange={(event) => {
+                                    hasLocalReportNameEdit.current = true;
+                                    setReportName(event.target.value);
+                                }}
+                                onBlur={() => setReportName((current) => current.trim() || dataset.name)}
+                                style={{
+                                    width: 'min(520px, 70vw)',
+                                    padding: 0,
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--foreground)',
+                                    font: 'inherit',
+                                    fontSize: '1.55rem',
+                                    fontWeight: 700
+                                }}
+                            />
                             {!dataset.id && (
                                 <p style={{ marginTop: '8px', fontSize: '0.72rem', color: '#fbbf24' }}>
                                     ⚠️ {t('canvas.temporary_dataset')}
                                 </p>
                             )}
+                            </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '10px', flexWrap: 'wrap', marginLeft: 'auto' }}>
                             <button
@@ -2028,7 +2105,21 @@ const ReportCanvas = React.forwardRef<{ handleSave: (isSaveAs?: boolean) => Prom
 
                 {/* Canvas Area */}
                 <div
-                    style={{ flex: 1, position: 'relative', minHeight: 0, paddingBottom: '40px' }}
+                    style={{
+                        flex: 1,
+                        position: 'relative',
+                        minHeight: 0,
+                        paddingBottom: '40px',
+                        background: activeTemplate.pageBackground,
+                        color: activeTemplate.text,
+                        ['--report-background' as string]: activeTemplate.pageBackground,
+                        ['--report-surface' as string]: activeTemplate.surface,
+                        ['--report-surface-alt' as string]: activeTemplate.surfaceAlt,
+                        ['--report-border' as string]: activeTemplate.border,
+                        ['--report-text' as string]: activeTemplate.text,
+                        ['--report-muted' as string]: activeTemplate.mutedText,
+                        ['--report-accent' as string]: activeTemplate.accent
+                    }}
                     onClick={(e) => {
                         if (e.target === e.currentTarget) handleBackToVisuals();
                     }}

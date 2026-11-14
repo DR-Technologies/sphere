@@ -1,6 +1,10 @@
-import type { StoryExportJobPhase } from './types';
+import type { StoryExportJobPhase, StoryOrientation } from './types';
 
 export const STORY_EXPORT_FPS = 24;
+export const STORY_EXPORT_VIEWPORTS: Record<StoryOrientation, { width: number; height: number }> = {
+  landscape: { width: 1920, height: 1080 },
+  portrait: { width: 1080, height: 1920 }
+};
 
 export function computeStoryExportFrameCount(durationMs: number, fps: number) {
   if (!Number.isFinite(durationMs) || durationMs <= 0 || !Number.isFinite(fps) || fps <= 0) {

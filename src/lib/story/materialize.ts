@@ -3,7 +3,7 @@ import { buildWidgetQueryModel } from '@/lib/analytics/queryModel';
 import { resolveWidgetVisualizationResult } from '@/lib/analytics/widgetResult';
 import type { DatasetRow } from '@/lib/analytics/types';
 import type { AggregationType, DatasetColumnMeta, Widget } from '@/lib/widgets/types';
-import { formatStoryAxisLabel, formatStoryValue, inferStoryValueFormat } from './format';
+import { compareStoryTemporalValues, formatStoryAxisLabel, formatStoryValue, inferStoryValueFormat } from './format';
 import {
   STORY_RENDER_MODEL_VERSION,
   STORY_SCHEMA_VERSION,
@@ -295,7 +295,7 @@ function buildCompositionItems(rows: Record<string, unknown>[], categoryField: s
   }));
 }
 
-function buildRaceFrames(rows: Record<string, unknown>[], binding: StoryRaceBinding): RaceFrame[] {
+export function buildRaceFrames(rows: Record<string, unknown>[], binding: StoryRaceBinding, story: StoryDefinition): RaceFrame[] {
   const grouped = new Map<string, Record<string, unknown>[]>();
   rows.forEach((row) => {
     const frameKey = rowKey(row, binding.timeField);
@@ -306,16 +306,16 @@ function buildRaceFrames(rows: Record<string, unknown>[], binding: StoryRaceBind
   });
 
   return Array.from(grouped.entries())
-    .sort((left, right) => left[0].localeCompare(right[0]))
+    .sort((left, right) => compareStoryTemporalValues(left[0], right[0]))
     .map(([key, frameRows]) => ({
       key,
-      label: formatStoryAxisLabel(key),
+      label: formatStoryAxisLabel(key, { locale: story.locale, timeZone: story.timeZone }),
       items: buildRankedItems(frameRows, binding.categoryField, binding.measureField).slice(0, binding.topN)
     }))
     .filter((frame) => frame.items.length > 0);
 }
 
-function buildCompositionFrames(rows: Record<string, unknown>[], binding: StoryCompositionBinding): CompositionFrame[] {
+export function buildCompositionFrames(rows: Record<string, unknown>[], binding: StoryCompositionBinding, story: StoryDefinition): CompositionFrame[] {
   if (!binding.timeField) {
     return [{
       key: 'current',
@@ -334,10 +334,10 @@ function buildCompositionFrames(rows: Record<string, unknown>[], binding: StoryC
   });
 
   return Array.from(grouped.entries())
-    .sort((left, right) => left[0].localeCompare(right[0]))
+    .sort((left, right) => compareStoryTemporalValues(left[0], right[0]))
     .map(([key, frameRows]) => ({
       key,
-      label: formatStoryAxisLabel(key),
+      label: formatStoryAxisLabel(key, { locale: story.locale, timeZone: story.timeZone }),
       items: buildCompositionItems(frameRows, binding.categoryField, binding.measureField).slice(0, binding.topN || 6)
     }))
     .filter((frame) => frame.items.length > 0);
@@ -373,7 +373,7 @@ function buildMultiDimensionSql(params: {
   `;
 }
 
-async function resolveScenePayload(scene: StorySceneDefinition, datasetId: string, columnsMeta: DatasetColumnMeta[]): Promise<SceneRenderPayload> {
+async function resolveScenePayload(scene: StorySceneDefinition, story: StoryDefinition, datasetId: string, columnsMeta: DatasetColumnMeta[]): Promise<SceneRenderPayload> {
   if (scene.source.kind === 'none') {
     return {
       data: {
@@ -394,7 +394,7 @@ async function resolveScenePayload(scene: StorySceneDefinition, datasetId: strin
           label: scene.source.labelField || scene.source.measureField,
           value,
           format,
-          formattedValue: formatStoryValue(value, format)
+          formattedValue: formatStoryValue(value, format, story.locale)
         }
       },
       emptyState: issue
@@ -405,11 +405,13 @@ async function resolveScenePayload(scene: StorySceneDefinition, datasetId: strin
     const binding = scene.source;
     const widget = buildSeriesWidget(binding, scene.id);
     const { rows, issue } = await resolveWidgetSceneRows(widget, columnsMeta, datasetId);
-    const points = rows.map((row) => ({
-      key: rowKey(row, binding.dimensionField),
-      label: formatStoryAxisLabel(rowKey(row, binding.dimensionField)),
-      value: normalizeNumeric(row[binding.measureField]) || 0
-    })) satisfies LineDatum[];
+    const points = rows
+      .map((row) => ({
+        key: rowKey(row, binding.dimensionField),
+        label: formatStoryAxisLabel(rowKey(row, binding.dimensionField), { locale: story.locale, timeZone: story.timeZone }),
+        value: normalizeNumeric(row[binding.measureField]) || 0
+      }))
+      .sort((left, right) => compareStoryTemporalValues(left.key, right.key)) satisfies LineDatum[];
 
     return {
       data: {
@@ -445,7 +447,7 @@ async function resolveScenePayload(scene: StorySceneDefinition, datasetId: strin
       aggregation: scene.source.aggregation,
       topN: 500
     }), datasetId);
-    const frames = buildRaceFrames(rows, scene.source);
+    const frames = buildRaceFrames(rows, scene.source, story);
 
     return {
       data: {
@@ -469,7 +471,7 @@ async function resolveScenePayload(scene: StorySceneDefinition, datasetId: strin
       }), datasetId)
       : (await resolveWidgetSceneRows(buildCompositionWidget(scene.source, scene.id), columnsMeta, datasetId)).rows;
 
-    const frames = buildCompositionFrames(rows, scene.source);
+    const frames = buildCompositionFrames(rows, scene.source, story);
 
     return {
       data: {
@@ -489,7 +491,7 @@ async function resolveScenePayload(scene: StorySceneDefinition, datasetId: strin
 }
 
 async function materializeScene(scene: StorySceneDefinition, story: StoryDefinition, datasetId: string, columnsMeta: DatasetColumnMeta[]): Promise<MaterializedScene> {
-  const payload = await resolveScenePayload(scene, datasetId, columnsMeta);
+  const payload = await resolveScenePayload(scene, story, datasetId, columnsMeta);
   return {
     sceneId: scene.id,
     bindingKind: scene.source.kind,
@@ -515,6 +517,8 @@ export async function materializeStory(story: StoryDefinition, context: StoryMat
     motionPresetId: story.motionPresetId,
     pacingPresetId: story.pacingPresetId,
     orientation: story.orientation,
+    locale: story.locale,
+    timeZone: story.timeZone,
     scenes,
     generatedAt: new Date().toISOString()
   };
@@ -535,6 +539,8 @@ export function recomposeMaterializedStory(story: StoryDefinition, existing: Mat
     motionPresetId: story.motionPresetId,
     pacingPresetId: story.pacingPresetId,
     orientation: story.orientation,
+    locale: story.locale,
+    timeZone: story.timeZone,
     generatedAt: new Date().toISOString(),
     scenes: story.scenes.map((scene) => {
       const previous = existingBySceneId.get(scene.id);

@@ -28,16 +28,45 @@ function scoreName(name: string, patterns: RegExp[]) {
   return patterns.some((pattern) => pattern.test(name));
 }
 
+function normalizeColumnName(name: string) {
+  const raw = name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const words = raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return { raw: raw.toLowerCase(), words, compact: words.replace(/\s+/g, '') };
+}
+
 function getUniqueRatio(stat?: DatasetColumnStat) {
   if (!stat || !stat.total) return 0;
   return stat.unique / stat.total;
+}
+
+function hasTemporalName(name: ReturnType<typeof normalizeColumnName>) {
+  return scoreName(name.words, [
+    /\bdate\b/,
+    /\bfecha\b/,
+    /\bdatetime\b/,
+    /\btimestamp\b/,
+    /\bmonth\b/,
+    /\bmes\b/,
+    /\byear\b/,
+    /\banio\b/,
+    /\bperiod\b/,
+    /\bperiodo\b/,
+    /\bquarter\b/,
+    /\btrimestre\b/
+  ]);
 }
 
 export function inferSemanticRole(
   column: Pick<DatasetColumn, 'name' | 'type'>,
   stat?: DatasetColumnStat
 ): { role: DatasetSemanticRole; confidence: number; reason: string } {
-  const name = column.name.toLowerCase();
+  const name = normalizeColumnName(column.name);
   const type = column.type.toUpperCase();
   const uniqueRatio = getUniqueRatio(stat);
 
@@ -49,38 +78,91 @@ export function inferSemanticRole(
     return { role: 'datetime', confidence: 0.99, reason: 'date_type' };
   }
 
-  const isGeo = scoreName(name, [
+  if (hasTemporalName(name)) {
+    return { role: 'datetime', confidence: 0.86, reason: 'temporal_name_pattern' };
+  }
+
+  const hasStrongIdentifierName = scoreName(name.words, [
+    /\bid\b/,
+    /\buuid\b/,
+    /\bcode\b/,
+    /\bcodigo\b/,
+    /\bkey\b/,
+    /\bidentificador\b/,
+    /\bsku\b/,
+    /\bnit\b/,
+    /\binvoice\b/,
+    /\bfactura\b/,
+    /\baccount\s+number\b/,
+    /\bnumero\s+(de\s+)?(factura|contrato|cuenta|pedido|orden)\b/
+  ]) || /^(id|uuid|code|codigo|key|identificador|sku|nit|invoice|factura)/.test(name.compact);
+  const hasWeakIdentifierName = scoreName(name.words, [/\bnumber\b/, /\bnumero\b/, /\bnro\b/, /\bno\b/]);
+  if (hasStrongIdentifierName || (hasWeakIdentifierName && uniqueRatio > 0.7)) {
+    return {
+      role: 'identifier',
+      confidence: 0.9,
+      reason: hasStrongIdentifierName ? 'identifier_name_pattern' : 'identifier_name_and_uniqueness'
+    };
+  }
+
+  const isGeo = scoreName(name.words, [
     /\bcountry\b/,
+    /\bpais\b/,
     /\bregion\b/,
     /\bcity\b/,
+    /\bciudad\b/,
     /\bstate\b/,
+    /\bdepartamento\b/,
     /\bprovince\b/,
+    /\bprovincia\b/,
+    /\bmunicipio\b/,
     /\bpostal\b/,
     /\bzip\b/,
     /\blat\b/,
+    /\blatitud\b/,
     /\blatitude\b/,
     /\blon\b/,
     /\blng\b/,
+    /\blongitud\b/,
     /\blongitude\b/
   ]);
   if (isGeo) {
     return { role: 'geography', confidence: 0.92, reason: 'geography_name_pattern' };
   }
 
-  if (NUMERIC_TYPES.has(type) && scoreName(name, [/%/, /\bpercent(age)?\b/, /\bpct\b/, /\brate\b/, /\bratio\b/, /\bmargin\b/])) {
+  if (NUMERIC_TYPES.has(type) && (name.raw.includes('%') || scoreName(name.words, [/\bpercent(age)?\b/, /\bporcentaje\b/, /\bpct\b/, /\brate\b/, /\btasa\b/, /\bratio\b/, /\bmargin\b/, /\bmargen\b/]))) {
     return { role: 'percentage', confidence: 0.88, reason: 'percentage_name_pattern' };
   }
 
-  if (NUMERIC_TYPES.has(type) && scoreName(name, [/\bamount\b/, /\brevenue\b/, /\bsales\b/, /\bcost\b/, /\bprice\b/, /\bbudget\b/, /\bprofit\b/, /\bexpense\b/, /\bincome\b/])) {
+  if (NUMERIC_TYPES.has(type) && (
+    scoreName(name.words, [/\bamount\b/, /\brevenue\b/, /\bsales\b/, /\bventa(s)?\b/, /\bcost\b/, /\bcosto(s)?\b/, /\bprice\b/, /\bprecio\b/, /\bbudget\b/, /\bpresupuesto\b/, /\bprofit\b/, /\butilidad\b/, /\bexpense\b/, /\bgasto(s)?\b/, /\bincome\b/, /\bingreso(s)?\b/, /\bmonto\b/, /\bimporte\b/, /\bfacturad[oa]?\b/])
+    || /^(monto|importe|ventas?|ingresos?|costos?|precios?|facturad)/.test(name.compact)
+  )) {
     return { role: 'currency', confidence: 0.84, reason: 'currency_name_pattern' };
   }
 
-  if (scoreName(name, [/\bid\b/, /\buuid\b/, /\bcode\b/, /\bkey\b/, /\bnumber\b/, /\bno\b/]) && uniqueRatio > 0.7) {
-    return { role: 'identifier', confidence: 0.86, reason: 'identifier_name_and_uniqueness' };
-  }
-
   if (NUMERIC_TYPES.has(type)) {
-    return { role: 'measure', confidence: 0.82, reason: 'numeric_type' };
+    const hasMeasureName = scoreName(name.words, [
+      /\bquantity\b/,
+      /\bcantidad\b/,
+      /\bunits?\b/,
+      /\bunidades?\b/,
+      /\bhours?\b/,
+      /\bhoras?\b/,
+      /\bduration\b/,
+      /\bduracion\b/,
+      /\bscore\b/,
+      /\bpuntaje\b/,
+      /\bweight\b/,
+      /\bpeso\b/,
+      /\bvolume\b/,
+      /\bvolumen\b/
+    ]);
+    return {
+      role: 'measure',
+      confidence: hasMeasureName ? 0.88 : 0.82,
+      reason: hasMeasureName ? 'measure_name_pattern' : 'numeric_type'
+    };
   }
 
   return {

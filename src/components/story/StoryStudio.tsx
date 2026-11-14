@@ -26,6 +26,8 @@ import { STORY_MOTION_PRESETS, STORY_PACING_TARGET_MS } from '@/lib/story/motion
 import { buildStoryPlaybackTimeline, createPlaybackControllerState, getStoryTotalDuration, reducePlaybackController } from '@/lib/story/playback';
 import { materializeStory, recomposeMaterializedStory } from '@/lib/story/materialize';
 import { createStoryExportJob, getStoryExportJobs } from '@/lib/story/exportJobs';
+import { createStoryExportCacheKey } from '@/lib/story/exportCache';
+import { STORY_EXPORT_FPS, STORY_EXPORT_VIEWPORTS } from '@/lib/story/exportProgress';
 import { getPublicStoryUrl, getPublishedStorySnapshotByStoryId, publishStorySnapshot, revokePublishedStorySnapshot } from '@/lib/story/publishing';
 import { deleteStory, saveStory, type SavedStoryRecord } from '@/lib/story/persistence';
 import type { DatasetRow } from '@/lib/analytics/types';
@@ -40,6 +42,7 @@ import type {
 } from '@/lib/story/types';
 import type { PresentationTemplateId } from '@/lib/visualSystem';
 import { QUICK_RESULT_TEMPLATES } from '@/lib/quickResult/templates';
+import { useTranslation } from '@/lib/i18n/LanguageContext';
 
 interface StoryStudioProps {
   dataset: {
@@ -145,6 +148,8 @@ export default function StoryStudio({
   onStorySaved,
   onStoryDeleted
 }: StoryStudioProps) {
+  const { language } = useTranslation();
+  const timeZone = React.useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', []);
   const [story, setStory] = React.useState<StoryDefinition | null>(initialStory);
   const [materializedStory, setMaterializedStory] = React.useState<MaterializedStory | null>(null);
   const [selectedSceneId, setSelectedSceneId] = React.useState<string | null>(initialStory?.scenes[0]?.id || null);
@@ -159,6 +164,7 @@ export default function StoryStudio({
   const [exportJobs, setExportJobs] = React.useState<StoryExportJob[]>([]);
   const [isExporting, setIsExporting] = React.useState(false);
   const [isPublishing, setIsPublishing] = React.useState(false);
+  const [downloadingJobId, setDownloadingJobId] = React.useState<string | null>(null);
 
   const loadPublicationAndJobs = React.useCallback(async (storyId: string) => {
     const [publication, jobs] = await Promise.all([
@@ -185,15 +191,20 @@ export default function StoryStudio({
         setError(null);
 
         if (initialStory) {
-          const materialized = await materializeStory(initialStory, {
+          const localizedStory = {
+            ...initialStory,
+            locale: initialStory.locale || language,
+            timeZone: initialStory.timeZone || timeZone
+          };
+          const materialized = await materializeStory(localizedStory, {
             columnsMeta: dataset.columns,
             previewRows: dataset.preview
           });
 
           if (cancelled) return;
-          setStory(initialStory);
+          setStory(localizedStory);
           setMaterializedStory(materialized);
-          setSelectedSceneId(initialStory.scenes[0]?.id || null);
+          setSelectedSceneId(localizedStory.scenes[0]?.id || null);
           if (initialStory.id) {
             void loadPublicationAndJobs(initialStory.id);
           }
@@ -214,7 +225,9 @@ export default function StoryStudio({
               source: 'quick-result'
             },
             userId,
-            sourceReportId
+            sourceReportId,
+            locale: language,
+            timeZone
           });
 
           if (cancelled) return;
@@ -254,10 +267,12 @@ export default function StoryStudio({
     dataset.name,
     dataset.preview,
     initialStory,
+    language,
     loadPublicationAndJobs,
     onStorySaved,
     presentation,
     sourceReportId,
+    timeZone,
     userId,
     widgets
   ]);
@@ -474,24 +489,36 @@ export default function StoryStudio({
     }
   }, [publishedSlug]);
 
-  const handleExport = React.useCallback(async (orientation: StoryOrientation) => {
+  const handleExport = React.useCallback(async (orientation: StoryOrientation, forceNew = false) => {
     if (!story?.id || !materializedStory) return;
 
     try {
       setIsExporting(true);
+      const exportStory = { ...story, orientation };
+      const exportMaterialized = cloneMaterializedForOrientation(materializedStory, orientation);
+      const viewport = STORY_EXPORT_VIEWPORTS[orientation];
+      const cacheKey = await createStoryExportCacheKey({
+        story: exportStory,
+        materializedStory: exportMaterialized,
+        orientation,
+        width: viewport.width,
+        height: viewport.height,
+        fps: STORY_EXPORT_FPS
+      });
       const created = await createStoryExportJob({
         storyId: story.id,
         userId,
-        orientation
+        orientation,
+        cacheKey,
+        forceNew
       });
 
       setExportJobs((current) => [created.job, ...current.filter((job) => job.id !== created.job.id)]);
       if (!created.isNew) {
+        if (created.cacheHit) setSaveMessage('Video existente listo para descargar.');
         return;
       }
       const accessToken = await getCurrentAccessToken();
-      const exportStory = { ...story, orientation };
-      const exportMaterialized = cloneMaterializedForOrientation(materializedStory, orientation);
 
       await fetch('/api/story-exports/start', {
         method: 'POST',
@@ -504,6 +531,7 @@ export default function StoryStudio({
           story: exportStory,
           materializedStory: exportMaterialized,
           orientation,
+          cacheKey,
           accessToken,
           mockMode: isE2EMockMode()
         })
@@ -536,22 +564,35 @@ export default function StoryStudio({
   }, [onBack, onStoryDeleted, story, userId]);
 
   const downloadExport = React.useCallback(async (jobId: string) => {
-    const accessToken = await getCurrentAccessToken();
-    const response = await fetch(`/api/story-exports/${jobId}/download`, {
-      headers: {
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        ...(isE2EMockMode() ? { 'x-sphere-e2e-mock': '1' } : {})
-      }
-    });
+    const startedAt = performance.now();
+    setDownloadingJobId(jobId);
+    try {
+      const accessToken = await getCurrentAccessToken();
+      const response = await fetch(`/api/story-exports/${jobId}/download`, {
+        headers: {
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          ...(isE2EMockMode() ? { 'x-sphere-e2e-mock': '1' } : {})
+        }
+      });
 
-    if (!response.ok) return;
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = exportJobs.find((job) => job.id === jobId)?.fileName || 'sphere-story.mp4';
-    anchor.click();
-    URL.revokeObjectURL(url);
+      if (!response.ok) {
+        setSaveMessage('El archivo exportado ya no está disponible. Usa Retry para generarlo nuevamente.');
+        setExportJobs((current) => current.map((job) => job.id === jobId ? { ...job, status: 'failed', phase: 'failed', error: 'Export artifact unavailable.' } : job));
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = exportJobs.find((job) => job.id === jobId)?.fileName || 'sphere-story.mp4';
+      anchor.click();
+      URL.revokeObjectURL(url);
+      appLogger.info('story', 'STORY_EXPORT_DOWNLOAD_COMPLETED', 'Story export downloaded.', {
+        meta: { jobId, downloadTimeMs: Math.round(performance.now() - startedAt), sizeBytes: blob.size }
+      });
+    } finally {
+      setDownloadingJobId(null);
+    }
   }, [exportJobs]);
 
   if (isLoading) {
@@ -922,12 +963,12 @@ export default function StoryStudio({
                         <p>{getExportJobSummary(job)}</p>
                       </div>
                       {job.status === 'completed' ? (
-                        <button type="button" className="ghost-action" onClick={() => downloadExport(job.id)}>
-                          <CheckCircle2 size={16} />
-                          Download
+                        <button type="button" className="ghost-action" onClick={() => downloadExport(job.id)} disabled={downloadingJobId === job.id}>
+                          {downloadingJobId === job.id ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                          {downloadingJobId === job.id ? 'Downloading…' : 'Download'}
                         </button>
                       ) : job.status === 'failed' ? (
-                        <button type="button" className="ghost-action" onClick={() => handleExport(job.orientation)}>
+                        <button type="button" className="ghost-action" onClick={() => handleExport(job.orientation, true)}>
                           <Clapperboard size={16} />
                           Retry
                         </button>

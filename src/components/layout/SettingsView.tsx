@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from '@/lib/i18n/LanguageContext';
 import { Globe, Moon, Sun } from 'lucide-react';
 import { useTheme } from '@/lib/theme/ThemeContext';
+import AccountSettings from '@/components/settings/AccountSettings';
 
 export default function SettingsView() {
     const { language, setLanguage, t } = useTranslation();
@@ -16,6 +17,8 @@ export default function SettingsView() {
                     {t('settings.title')}
                 </h1>
             </header>
+
+            <AccountSettings />
 
             <section className="glass-card" style={{ padding: '32px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>

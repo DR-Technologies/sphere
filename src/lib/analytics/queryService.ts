@@ -3,6 +3,27 @@ import type { WidgetQueryModel } from './queryModel';
 import type { DatasetColumnMeta } from '@/lib/widgets/types';
 
 const NUMERIC_COLUMN_TYPES = new Set(['INTEGER', 'BIGINT', 'DOUBLE', 'DECIMAL', 'NUMERIC', 'REAL', 'SMALLINT']);
+const MAX_CONCURRENT_WIDGET_QUERIES = 2;
+const inFlightQueries = new Map<string, Promise<Record<string, unknown>[]>>();
+const queryQueue: Array<() => void> = [];
+let activeQueryCount = 0;
+
+export function quoteSqlIdentifier(identifier: string) {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+async function scheduleWidgetQuery<T>(task: () => Promise<T>) {
+  if (activeQueryCount >= MAX_CONCURRENT_WIDGET_QUERIES) {
+    await new Promise<void>((resolve) => queryQueue.push(resolve));
+  }
+  activeQueryCount += 1;
+  try {
+    return await task();
+  } finally {
+    activeQueryCount -= 1;
+    queryQueue.shift()?.();
+  }
+}
 
 function getColumnType(columnsMeta: DatasetColumnMeta[], columnName?: string) {
   if (!columnName) return null;
@@ -10,18 +31,19 @@ function getColumnType(columnsMeta: DatasetColumnMeta[], columnName?: string) {
 }
 
 function buildAggregationExpression(columnsMeta: DatasetColumnMeta[], columnName: string, aggregation: string) {
-  if (aggregation === 'COUNT') return `COUNT("${columnName}")`;
-  if (aggregation === 'DISTINCT') return `COUNT(DISTINCT "${columnName}")`;
+  const column = quoteSqlIdentifier(columnName);
+  if (aggregation === 'COUNT') return `COUNT(${column})`;
+  if (aggregation === 'DISTINCT') return `COUNT(DISTINCT ${column})`;
 
   if (aggregation === 'SUM' || aggregation === 'AVG') {
     const columnType = getColumnType(columnsMeta, columnName);
     if (!columnType || !NUMERIC_COLUMN_TYPES.has(columnType)) {
       throw new Error(`Aggregation ${aggregation} requires a numeric column.`);
     }
-    return `${aggregation}("${columnName}"::double precision)`;
+    return `${aggregation}(${column}::double precision)`;
   }
 
-  return `${aggregation}("${columnName}")`;
+  return `${aggregation}(${column})`;
 }
 
 function getEffectiveAggregation(model: WidgetQueryModel, columnsMeta: DatasetColumnMeta[]) {
@@ -42,7 +64,7 @@ function escapeFilterValue(value: string | null) {
 function buildWhereClause(model: WidgetQueryModel) {
   const filtersToApply = model.filters.filter((filter) => filter.column && filter.value !== null && filter.value !== '');
   if (!filtersToApply.length) return '';
-  return `WHERE ${filtersToApply.map((filter) => `"${filter.column}" = '${escapeFilterValue(filter.value)}'`).join(' AND ')}`;
+  return `WHERE ${filtersToApply.map((filter) => `${quoteSqlIdentifier(filter.column)} = '${escapeFilterValue(filter.value)}'`).join(' AND ')}`;
 }
 
 export function buildWidgetSql(model: WidgetQueryModel, columnsMeta: DatasetColumnMeta[]) {
@@ -52,24 +74,24 @@ export function buildWidgetSql(model: WidgetQueryModel, columnsMeta: DatasetColu
 
   if (model.kind === 'card') {
     const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, effectiveAggregation);
-    return `SELECT ${aggExpr} as "${widget.yAxis}" FROM dataset ${whereClause}`;
+    return `SELECT ${aggExpr} as ${quoteSqlIdentifier(widget.yAxis)} FROM dataset ${whereClause}`;
   }
 
   if (model.kind === 'map' && widget.latitudeField && widget.longitudeField) {
     const metricExpr = effectiveAggregation === 'NONE'
-      ? `"${widget.yAxis}"::double precision`
+      ? `${quoteSqlIdentifier(widget.yAxis)}::double precision`
       : buildAggregationExpression(columnsMeta, widget.yAxis, effectiveAggregation);
-    const dimensionSelect = widget.xAxis ? `"${widget.xAxis}",` : '';
+    const dimensionSelect = widget.xAxis ? `${quoteSqlIdentifier(widget.xAxis)},` : '';
     const groupByClause = effectiveAggregation === 'NONE'
       ? ''
-      : `GROUP BY ${widget.xAxis ? `"${widget.xAxis}",` : ''} "${widget.latitudeField}", "${widget.longitudeField}"`;
+      : `GROUP BY ${widget.xAxis ? `${quoteSqlIdentifier(widget.xAxis)},` : ''} ${quoteSqlIdentifier(widget.latitudeField)}, ${quoteSqlIdentifier(widget.longitudeField)}`;
 
     return `
       SELECT
         ${dimensionSelect}
-        "${widget.latitudeField}",
-        "${widget.longitudeField}",
-        ${metricExpr} as "${widget.yAxis}"
+        ${quoteSqlIdentifier(widget.latitudeField)},
+        ${quoteSqlIdentifier(widget.longitudeField)},
+        ${metricExpr} as ${quoteSqlIdentifier(widget.yAxis)}
       FROM dataset
       ${whereClause}
       ${groupByClause}
@@ -85,38 +107,38 @@ export function buildWidgetSql(model: WidgetQueryModel, columnsMeta: DatasetColu
       const abbreviations: Record<string, string> = { SUM: 'SUM', AVG: 'AVG', COUNT: 'CNT', DISTINCT: 'DST' };
       const selects = widget.columns.map((columnName) => {
         const aggregation = columnAggregations[columnName] || 'NONE';
-        if (aggregation === 'NONE') return `"${columnName}"`;
+        if (aggregation === 'NONE') return quoteSqlIdentifier(columnName);
         const abbreviation = abbreviations[aggregation] || aggregation;
-        return `${buildAggregationExpression(columnsMeta, columnName, aggregation)} as "${columnName} (${abbreviation})"`;
+        return `${buildAggregationExpression(columnsMeta, columnName, aggregation)} as ${quoteSqlIdentifier(`${columnName} (${abbreviation})`)}`;
       }).join(', ');
 
       const dimensions = widget.columns.filter((columnName) => (columnAggregations[columnName] || 'NONE') === 'NONE');
-      const groupByClause = dimensions.length > 0 ? `GROUP BY ${dimensions.map((columnName) => `"${columnName}"`).join(', ')}` : '';
+      const groupByClause = dimensions.length > 0 ? `GROUP BY ${dimensions.map(quoteSqlIdentifier).join(', ')}` : '';
       return `SELECT ${selects} FROM dataset ${whereClause} ${groupByClause} LIMIT 50`;
     }
 
-    const cols = widget.columns.map((columnName) => `"${columnName}"`).join(', ');
+    const cols = widget.columns.map(quoteSqlIdentifier).join(', ');
     return `SELECT ${cols} FROM dataset ${whereClause} LIMIT 100`;
   }
 
   if (effectiveAggregation === 'NONE') {
-    const orderClause = widget.orderBy ? `ORDER BY "${widget.xAxis}" ${widget.orderBy}` : '';
+    const orderClause = widget.orderBy ? `ORDER BY ${quoteSqlIdentifier(widget.xAxis)} ${widget.orderBy}` : '';
     const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 100';
-    return `SELECT "${widget.xAxis}", "${widget.yAxis}" FROM dataset ${whereClause} ${orderClause} ${limitClause}`;
+    return `SELECT ${quoteSqlIdentifier(widget.xAxis)}, ${quoteSqlIdentifier(widget.yAxis)} FROM dataset ${whereClause} ${orderClause} ${limitClause}`;
   }
 
   const aggExpr = buildAggregationExpression(columnsMeta, widget.yAxis, effectiveAggregation);
-  const orderCol = widget.orderBy === 'ASC' || widget.orderBy === 'DESC' ? `"${widget.yAxis}"` : `"${widget.xAxis}"`;
+  const orderCol = widget.orderBy === 'ASC' || widget.orderBy === 'DESC' ? quoteSqlIdentifier(widget.yAxis) : quoteSqlIdentifier(widget.xAxis);
   const orderDir = widget.orderBy || 'DESC';
   const limitClause = widget.topN ? `LIMIT ${widget.topN}` : 'LIMIT 50';
 
   return `
     SELECT
-      "${widget.xAxis}",
-      ${aggExpr} as "${widget.yAxis}"
+      ${quoteSqlIdentifier(widget.xAxis)},
+      ${aggExpr} as ${quoteSqlIdentifier(widget.yAxis)}
     FROM dataset
     ${whereClause}
-    GROUP BY "${widget.xAxis}"
+    GROUP BY ${quoteSqlIdentifier(widget.xAxis)}
     ORDER BY ${orderCol} ${orderDir}
     ${limitClause}
   `;
@@ -124,5 +146,15 @@ export function buildWidgetSql(model: WidgetQueryModel, columnsMeta: DatasetColu
 
 export async function executeWidgetQuery(model: WidgetQueryModel, columnsMeta: DatasetColumnMeta[], datasetId: string) {
   const sql = buildWidgetSql(model, columnsMeta);
-  return getAnalyticsProvider().runQuery(sql, { datasetId });
+  const cacheKey = `${datasetId}\u0000${sql}`;
+  const existing = inFlightQueries.get(cacheKey);
+  if (existing) return existing;
+
+  const pending = scheduleWidgetQuery(() => getAnalyticsProvider().runQuery(sql, { datasetId }));
+  inFlightQueries.set(cacheKey, pending);
+  void pending.then(
+    () => inFlightQueries.delete(cacheKey),
+    () => inFlightQueries.delete(cacheKey)
+  );
+  return pending;
 }

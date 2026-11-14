@@ -2,7 +2,7 @@ import type { DatasetRow } from '@/lib/analytics/types';
 import type { DatasetColumnMeta, ReportPresentation, Widget } from '@/lib/widgets/types';
 import { generateAutomaticStory } from './generator';
 import { materializeStory, pruneMaterializedStory } from './materialize';
-import type { MotionPresetId, StoryDefinition, StoryPacingPresetId } from './types';
+import type { MotionPresetId, StoryDefinition, StoryLocale, StoryPacingPresetId } from './types';
 
 interface StoryDraftDataset {
   id: string;
@@ -19,6 +19,8 @@ export async function createAutomaticStoryDraft(params: {
   sourceReportId?: string | null;
   motionPresetId?: MotionPresetId;
   pacingPresetId?: StoryPacingPresetId;
+  locale?: StoryLocale;
+  timeZone?: string;
 }) {
   const story = generateAutomaticStory({
     dataset: params.dataset,
@@ -27,7 +29,9 @@ export async function createAutomaticStoryDraft(params: {
     userId: params.userId,
     sourceReportId: params.sourceReportId,
     motionPresetId: params.motionPresetId,
-    pacingPresetId: params.pacingPresetId
+    pacingPresetId: params.pacingPresetId,
+    locale: params.locale,
+    timeZone: params.timeZone
   });
 
   const materializedStory = await materializeStory(story, {

@@ -17,12 +17,12 @@ function clamp01(value: number) {
 
 function resolveContentProgress(playback: StoryScenePlaybackState) {
   if (playback.phase === 'enter') {
-    return clamp01(0.22 + playback.enterProgress * 0.74);
+    return clamp01(playback.enterProgress * 0.24);
   }
   if (playback.phase === 'main') {
-    return clamp01(0.62 + playback.mainProgress * 0.38);
+    return clamp01(0.24 + playback.mainProgress * 0.76);
   }
-  return clamp01(1 - playback.exitProgress * 0.9);
+  return 1;
 }
 
 export function resolveSceneLayerRenderState(scene: MaterializedScene, playback: StoryScenePlaybackState): SceneLayerRenderState {
@@ -57,7 +57,7 @@ export function resolveSceneLayerRenderState(scene: MaterializedScene, playback:
 export function resolveVisibleSceneLayers(materializedStory: MaterializedStory, frame: StoryFrameState) {
   const scenesById = new Map(materializedStory.scenes.map((scene) => [scene.sceneId, scene]));
 
-  return frame.visibleScenes
+  const layers = frame.visibleScenes
     .map((visible) => {
       const scene = scenesById.get(visible.sceneId);
       if (!scene) return null;
@@ -65,4 +65,28 @@ export function resolveVisibleSceneLayers(materializedStory: MaterializedStory, 
     })
     .filter((layer): layer is SceneLayerRenderState => Boolean(layer))
     .sort((left, right) => left.playback.sceneIndex - right.playback.sceneIndex);
+
+  if (layers.length === 2) {
+    const [outgoing, incoming] = layers;
+    const mix = clamp01(outgoing.playback.transitionProgress);
+    if (mix > 0) {
+      const easedMix = mix * mix * (3 - 2 * mix);
+      return [
+        {
+          ...outgoing,
+          opacity: 1 - easedMix,
+          translateY: -8 * easedMix,
+          scale: 1 - easedMix * 0.012
+        },
+        {
+          ...incoming,
+          opacity: easedMix,
+          translateY: 12 * (1 - easedMix),
+          scale: 0.988 + easedMix * 0.012
+        }
+      ];
+    }
+  }
+
+  return layers;
 }

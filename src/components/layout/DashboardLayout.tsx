@@ -7,11 +7,12 @@ import SphereLogo from '@/components/brand/SphereLogo';
 
 interface DashboardLayoutProps {
     children: React.ReactNode;
-    activeView: 'home' | 'datasets' | 'upload' | 'reports' | 'settings';
-    onViewChange: (view: 'home' | 'datasets' | 'upload' | 'reports' | 'settings') => void;
+    activeView: 'home' | 'datasets' | 'upload' | 'reports' | 'settings' | 'admin';
+    onViewChange: (view: 'home' | 'datasets' | 'upload' | 'reports' | 'settings' | 'admin') => void;
     onLogout: () => void;
     userName?: string;
     editorMode?: boolean;
+    isSuperadmin?: boolean;
 }
 
 export default function DashboardLayout({
@@ -20,7 +21,8 @@ export default function DashboardLayout({
     onViewChange,
     onLogout,
     userName,
-    editorMode = false
+    editorMode = false,
+    isSuperadmin = false
 }: DashboardLayoutProps) {
     const [isMobile, setIsMobile] = React.useState(false);
     const [isMobileNavOpen, setIsMobileNavOpen] = React.useState(false);
@@ -54,7 +56,7 @@ export default function DashboardLayout({
         return () => media.removeEventListener('change', sync);
     }, []);
 
-    const handleViewChange = (view: 'home' | 'datasets' | 'upload' | 'reports' | 'settings') => {
+    const handleViewChange = (view: 'home' | 'datasets' | 'upload' | 'reports' | 'settings' | 'admin') => {
         onViewChange(view);
         if (isMobile) {
             setIsMobileNavOpen(false);
@@ -84,6 +86,7 @@ export default function DashboardLayout({
                 mobileMode={isMobile}
                 mobileOpen={isMobileNavOpen}
                 compactMode={editorMode && !isMobile}
+                isSuperadmin={isSuperadmin}
             />
             <main className="dashboard-content">
                 {children}

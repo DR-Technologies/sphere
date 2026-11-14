@@ -6,12 +6,15 @@ import { supabase } from '@/lib/supabase';
 import {
     getDatasets, uploadDatasetAssets, saveDataset, SavedDataset, syncNormalizedDataset,
     getReports, SavedReport, deleteDataset, updateReportName, getDatasetById,
-    checkDatasetLimit, deleteReport
+    checkDatasetLimit, deleteReport, getCurrentAccountLimits, getDatasetDeleteDependencies,
+    formatDatasetDependencyMessage, DATASET_LIMIT_MESSAGE, cleanupUploadedDatasetAssets, DatasetImportError,
+    AccountSuspendedError, type AccountLimits
 } from '@/lib/persistence';
 import { profileFile, profileFromUrl, getExcelSheetNames } from '@/lib/profiler';
-import type { DatasetImportOptions, DateInputFormat, JsonOrient } from '@/lib/analytics/types';
+import type { DatasetImportOptions, DatasetProcessingProgress, DateInputFormat, JsonOrient } from '@/lib/analytics/types';
+import { isSameDatasetProgress } from '@/lib/analytics/progress';
 import { appLogger, getErrorMessage } from '@/lib/logger';
-import { User } from '@supabase/supabase-js';
+import type { AuthChangeEvent, Session, User } from '@supabase/supabase-js';
 import DashboardLayout from './layout/DashboardLayout';
 import FileDropzone from '@/components/upload/FileDropzone';
 import DataTable from '@/components/ui/DataTable';
@@ -21,32 +24,85 @@ import StoryStudio from './story/StoryStudio';
 import LoginView from './auth/LoginView';
 import SphereLogo from './brand/SphereLogo';
 import ThreeDotMenu from './ui/ThreeDotMenu';
+import ReportPreloader from './reports/ReportPreloader';
 import { ArrowRight, Activity as SphereIcon, Database, FileText, Plus, Edit2, ExternalLink, Trash2, Hash, ALargeSmall, Calendar, Clapperboard } from 'lucide-react';
 import { LanguageProvider, useTranslation } from '@/lib/i18n/LanguageContext';
 import SettingsView from './layout/SettingsView';
+import AdminUsersView from './admin/AdminUsersView';
 import { formatDate } from '@/lib/dateUtils';
 import { buildQuickResultRecommendation } from '@/lib/quickResult/recommendation';
 import type { ReportPresentation, Widget } from '@/lib/widgets/types';
 import { deleteStory, getStories, type SavedStoryRecord } from '@/lib/story/persistence';
 
-type ViewState = 'home' | 'datasets' | 'upload' | 'reports' | 'settings';
+type ViewState = 'home' | 'datasets' | 'upload' | 'reports' | 'settings' | 'admin';
+
+function profileProgressWithOverall(progress: DatasetProcessingProgress): DatasetProcessingProgress {
+    const ranges = {
+        reading: [0, 0.1],
+        profiling: [0.1, 0.3],
+        normalizing: [0.3, 0.55]
+    } as const;
+    const range = progress.stage in ranges
+        ? ranges[progress.stage as keyof typeof ranges]
+        : [0, 0.55] as const;
+    return {
+        ...progress,
+        overallProgress: range[0] + Math.min(1, Math.max(0, progress.progress)) * (range[1] - range[0])
+    };
+}
+
+function persistenceProgressWithOverall(progress: DatasetProcessingProgress): DatasetProcessingProgress {
+    if (progress.stage === 'persisting') {
+        return { ...progress, overallProgress: 0.72 + Math.min(1, progress.progress) * 0.23 };
+    }
+    if (progress.stage === 'finalizing') {
+        return { ...progress, overallProgress: 0.95 + Math.min(1, progress.progress) * 0.04 };
+    }
+    return progress;
+}
+
+function importFailureMessage(error: unknown) {
+    if (!(error instanceof DatasetImportError)) {
+        return 'No pudimos completar la importación. No se guardó un dataset parcial; puedes reintentar.';
+    }
+    if (error.stage === 'uploading') {
+        return `No pudimos guardar los archivos del dataset. ${error.message} Puedes reintentar.`;
+    }
+    if (error.stage === 'metadata') {
+        return 'No pudimos registrar el dataset. Los archivos parciales se limpiaron; puedes reintentar.';
+    }
+    if (error.stage === 'finalizing') {
+        return `${error.message} La importación no fue marcada como completada y puedes reintentar.`;
+    }
+    return 'No pudimos persistir todos los bloques del dataset. La carga parcial fue abortada y puedes reintentar.';
+}
 
 function DashboardContent() {
     const { t } = useTranslation();
     const [activeView, setActiveView] = useState<ViewState>('home');
-    const [step, setStep] = useState<'main' | 'profiling' | 'quick' | 'canvas' | 'story'>('main');
+    const [step, setStep] = useState<'main' | 'profiling' | 'report-loading' | 'quick' | 'canvas' | 'story'>('main');
     const [dataset, setDataset] = useState<any>(null);
     const [isProfiling, setIsProfiling] = useState(false);
+    const [importProgress, setImportProgress] = useState<DatasetProcessingProgress | null>(null);
+    const [importError, setImportError] = useState<string | null>(null);
     const [user, setUser] = useState<User | null | undefined>(undefined);
     const [savedDatasets, setSavedDatasets] = useState<SavedDataset[]>([]);
     const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
     const [savedStories, setSavedStories] = useState<SavedStoryRecord[]>([]);
+    const [accountLimits, setAccountLimits] = useState<AccountLimits>({
+        role: 'standard',
+        subscriptionPlan: 'free',
+        status: 'active',
+        maxDatasets: 3,
+        maxReportsPerDataset: 3,
+        maxWidgetsPerReport: 9
+    });
     const [isLoadingSaved, setIsLoadingSaved] = useState(false);
     const [previewView, setPreviewView] = useState<'stats' | 'preview'>('preview');
     const [initialReportId, setInitialReportId] = useState<string | null>(null);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
-    const [pendingNavigation, setPendingNavigation] = useState<{ view?: ViewState, step?: 'main' | 'profiling' | 'canvas' | 'story' } | null>(null);
+    const [pendingNavigation, setPendingNavigation] = useState<{ view?: ViewState, step?: 'main' | 'profiling' | 'report-loading' | 'quick' | 'canvas' | 'story' } | null>(null);
     const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
     const [pendingImportFormat, setPendingImportFormat] = useState<string>('');
     const [availableSheets, setAvailableSheets] = useState<string[]>([]);
@@ -58,7 +114,11 @@ function DashboardContent() {
     const [quickResultWidgets, setQuickResultWidgets] = useState<Widget[]>([]);
     const [quickResultPresentation, setQuickResultPresentation] = useState<ReportPresentation | null>(null);
     const [initialStory, setInitialStory] = useState<import('@/lib/story/types').StoryDefinition | null>(null);
-    const canvasRef = React.useRef<{ handleSave: (isSaveAs?: boolean) => Promise<void>; reportName: string } | null>(null);
+    const canvasRef = React.useRef<{ handleSave: (isSaveAs?: boolean) => Promise<boolean>; reportName: string } | null>(null);
+
+    const updateImportProgress = useCallback((next: DatasetProcessingProgress | null) => {
+        setImportProgress((current) => isSameDatasetProgress(current, next) ? current : next);
+    }, []);
 
     const handleViewChange = (view: ViewState) => {
         if (hasUnsavedChanges) {
@@ -70,6 +130,10 @@ function DashboardContent() {
         setStep('main');
         setInitialReportId(null);
         setInitialStory(null);
+        if (view === 'reports' && user) {
+            void fetchSavedReports(user.id);
+            void fetchSavedStories(user.id);
+        }
     };
 
     const confirmNavigation = (action: 'save' | 'saveAs' | 'discard' | 'cancel') => {
@@ -93,9 +157,10 @@ function DashboardContent() {
 
         if (action === 'save' || action === 'saveAs') {
             if (canvasRef.current) {
-                canvasRef.current.handleSave(action === 'saveAs').then(() => {
+                canvasRef.current.handleSave(action === 'saveAs').then((saved) => {
+                    if (!saved) return;
                     setHasUnsavedChanges(false);
-                    if (user) fetchSavedReports(user.id); // Refresh reports after save
+                    if (user) void fetchSavedReports(user.id);
                     executePendingNavigation();
                 });
             }
@@ -107,8 +172,9 @@ function DashboardContent() {
         if (pendingNavigation) {
             if (pendingNavigation.view) setActiveView(pendingNavigation.view);
             // Default to 'main' step if not specified, crucial for exiting canvas
-            setStep(pendingNavigation.step || 'main');
-            setInitialReportId(null);
+            const targetStep = pendingNavigation.step || 'main';
+            setStep(targetStep);
+            if (targetStep !== 'quick') setInitialReportId(null);
             setInitialStory(null);
         } else {
             setStep('main');
@@ -131,8 +197,12 @@ function DashboardContent() {
     const fetchSavedReports = useCallback(async (userId?: string) => {
         const uid = userId || user?.id;
         if (!uid) return;
-        const data = await getReports(uid);
-        setSavedReports(data);
+        try {
+            const data = await getReports(uid);
+            setSavedReports(data);
+        } catch (error) {
+            appLogger.error('analytics', 'REFRESH_REPORT_LIST_FAILED', 'Could not refresh the report list.', { error, meta: { userId: uid } });
+        }
     }, [user?.id]);
 
     const fetchSavedStories = useCallback(async (userId?: string) => {
@@ -150,36 +220,88 @@ function DashboardContent() {
         if (user) void fetchSavedStories(user.id);
     }, [fetchSavedStories, user]);
 
-    useEffect(() => {
-        let isInitialFetch = true;
+    const handleReportSaved = useCallback((saved: SavedReport) => {
+        setSavedReports((current) => [saved, ...current.filter((report) => report.id !== saved.id)]);
+        if (saved.dataset_id === dataset?.id) {
+            const savedWidgets = saved.widgets as Widget[];
+            setQuickResultWidgets((current) => (
+                JSON.stringify(current) === JSON.stringify(savedWidgets) ? current : savedWidgets
+            ));
+            const savedPresentation = saved.presentation
+                ? { ...saved.presentation, title: saved.name }
+                : {
+                    title: saved.name,
+                    subtitle: '',
+                    templateId: 'modern',
+                    source: 'quick-result'
+                } as ReportPresentation;
+            setQuickResultPresentation((current) => (
+                JSON.stringify(current) === JSON.stringify(savedPresentation) ? current : savedPresentation
+            ));
+            setInitialReportId(saved.id);
+        }
+        if (user) void fetchSavedReports(user.id);
+    }, [dataset?.id, fetchSavedReports, user]);
 
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    useEffect(() => {
+        let disposed = false;
+        let loadedUserId: string | null = null;
+
+        const applySession = async (event: AuthChangeEvent, session: Session | null) => {
             appLogger.debug('auth', 'AUTH_EVENT', 'Supabase auth state change received.', {
                 meta: { event, hasSession: Boolean(session) }
             });
             const currentUser = session?.user ?? null;
-
-            // Set user state
+            if (disposed) return;
             setUser(currentUser);
 
             if (currentUser) {
-                if (isInitialFetch || event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+                if (loadedUserId !== currentUser.id || event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+                    loadedUserId = currentUser.id;
                     fetchSavedDatasets(currentUser.id);
                     fetchSavedReports(currentUser.id);
                     fetchSavedStories(currentUser.id);
-                    isInitialFetch = false;
+                    getCurrentAccountLimits()
+                        .then(setAccountLimits)
+                        .catch(async (limitsError) => {
+                            if (limitsError instanceof AccountSuspendedError) {
+                                alert(limitsError.message);
+                                await supabase.auth.signOut();
+                                return;
+                            }
+                            appLogger.error('auth', 'FETCH_ACCOUNT_LIMITS_UNHANDLED', 'Could not load account limits.', { error: limitsError });
+                        });
                 }
             } else if (event === 'INITIAL_SESSION' || event === 'SIGNED_OUT') {
+                loadedUserId = null;
                 setSavedDatasets([]);
+                setSavedReports([]);
                 setSavedStories([]);
-                // Wait a bit to ensure we didn't just miss a fast redirect
-                setTimeout(() => {
-                    setUser(prev => prev === undefined ? null : prev);
-                }, 600);
+                setAccountLimits({ role: 'standard', subscriptionPlan: 'free', status: 'active', maxDatasets: 3, maxReportsPerDataset: 3, maxWidgetsPerReport: 9 });
             }
+        };
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+            void applySession(event, session);
         });
 
-        return () => subscription.unsubscribe();
+        // INITIAL_SESSION is normally emitted by Supabase, but an explicit read makes
+        // startup deterministic if the subscription is registered after that event.
+        void supabase.auth.getSession()
+            .then(({ data, error }) => {
+                if (error) throw error;
+                return applySession('INITIAL_SESSION', data.session);
+            })
+            .catch((error) => {
+                if (disposed) return;
+                appLogger.error('auth', 'INITIAL_SESSION_FAILED', 'Could not initialize the current session.', { error });
+                setUser(null);
+            });
+
+        return () => {
+            disposed = true;
+            subscription.unsubscribe();
+        };
     }, [fetchSavedDatasets, fetchSavedReports, fetchSavedStories]);
 
     const handleLogout = async () => {
@@ -216,6 +338,8 @@ function DashboardContent() {
         setCsvQuoteChar('\"');
         setJsonOrient('records');
         setDateFormat('AUTO');
+        updateImportProgress(null);
+        setImportError(null);
     };
 
     const handleFileSelect = async (file: File) => {
@@ -223,7 +347,7 @@ function DashboardContent() {
 
         const canUpload = await checkDatasetLimit(user.id);
         if (!canUpload) {
-            alert('Límite de datasets alcanzado (3).');
+            alert(DATASET_LIMIT_MESSAGE);
             return;
         }
 
@@ -276,25 +400,64 @@ function DashboardContent() {
         if (!user) return;
         setIsProfiling(true);
         setStep('profiling');
+        setImportError(null);
+        updateImportProgress({ stage: 'reading', progress: 0 });
+        let completed = false;
         try {
-            const profile = await profileFile(file, importOptions);
+            const profile = await profileFile(file, importOptions, {
+                onProgress: (progress) => updateImportProgress(profileProgressWithOverall(progress))
+            });
             const datasetName = importOptions.sheetName ? `${file.name} (${importOptions.sheetName})` : file.name;
-            const datasetData = { name: datasetName, ...profile };
-
             if (user) {
-                const uploadedAssets = await uploadDatasetAssets(file, user.id, profile.artifacts);
-                if (uploadedAssets.fileUrl) {
-                    const savedDs = await saveDataset({
-                        user_id: user.id,
-                        name: datasetName,
-                        file_url: uploadedAssets.fileUrl,
-                        normalized_file_url: uploadedAssets.normalizedFileUrl || undefined,
-                        analytics_manifest_url: uploadedAssets.analyticsManifestUrl || undefined,
-                        sheet_name: importOptions.sheetName,
-                        columns: profile.columns,
-                        stats: profile.stats
+                const totalRows = profile.artifacts?.normalizedRows.length || 0;
+                updateImportProgress({ stage: 'uploading', progress: 0, overallProgress: 0.55, processedRows: totalRows, totalRows });
+                const uploadedAssets = await uploadDatasetAssets(file, user.id, profile.artifacts, (completedParts, totalParts) => {
+                    const progress = totalParts > 0 ? completedParts / totalParts : 0;
+                    updateImportProgress({
+                        stage: 'uploading',
+                        progress,
+                        overallProgress: 0.55 + Math.min(1, progress) * 0.15,
+                        processedRows: totalRows,
+                        totalRows
                     });
-                    const syncedDs = await ensureDatasetAnalyticsTable(savedDs, profile);
+                });
+
+                let savedDs: SavedDataset | null = null;
+                try {
+                    updateImportProgress({ stage: 'persisting', progress: 0, overallProgress: 0.7, processedRows: 0, totalRows });
+                    let persistedDataset: SavedDataset;
+                    try {
+                        persistedDataset = await saveDataset({
+                            user_id: user.id,
+                            name: datasetName,
+                            file_url: uploadedAssets.fileUrl,
+                            normalized_file_url: uploadedAssets.normalizedFileUrl || undefined,
+                            analytics_manifest_url: uploadedAssets.analyticsManifestUrl,
+                            sheet_name: importOptions.sheetName,
+                            columns: profile.columns,
+                            stats: profile.stats
+                        });
+                    } catch (error) {
+                        throw new DatasetImportError('metadata', 'SAVE_DATASET_METADATA_FAILED', 'No se pudo registrar el dataset.', {
+                            cause: getErrorMessage(error)
+                        });
+                    }
+                    savedDs = persistedDataset;
+                    if (persistedDataset.file_url !== uploadedAssets.fileUrl
+                        || persistedDataset.analytics_manifest_url !== uploadedAssets.analyticsManifestUrl) {
+                        throw new DatasetImportError(
+                            'metadata',
+                            'DATASET_ARTIFACT_METADATA_MISMATCH',
+                            'La base de datos no confirmó las referencias obligatorias de los archivos del dataset.'
+                        );
+                    }
+                    const normalizedTableName = await syncNormalizedDataset(
+                        persistedDataset.id,
+                        profile.columns,
+                        profile.artifacts?.normalizedRows || [],
+                        (progress) => updateImportProgress(persistenceProgressWithOverall(progress))
+                    );
+                    const syncedDs = { ...persistedDataset, normalized_table_name: normalizedTableName };
                     const nextDataset = { id: syncedDs.id, name: datasetName, ...profile };
                     const recommendation = buildQuickResultRecommendation(nextDataset);
                     setDataset(nextDataset);
@@ -303,16 +466,38 @@ function DashboardContent() {
                     setInitialStory(null);
                     setStep('quick');
                     fetchSavedDatasets(user.id);
+                    updateImportProgress({ stage: 'complete', progress: 1, overallProgress: 1, processedRows: totalRows, totalRows });
+                    completed = true;
+                } catch (persistenceError) {
+                    if (savedDs) {
+                        await deleteDataset(savedDs.id, savedDs.file_url, user.id).catch((cleanupError) => {
+                            appLogger.warn('ingestion', 'ROLLBACK_PARTIAL_DATASET_FAILED', 'Could not roll back dataset metadata after import failure.', {
+                                error: cleanupError,
+                                meta: { datasetId: savedDs?.id }
+                            });
+                        });
+                    }
+                    await cleanupUploadedDatasetAssets(uploadedAssets);
+                    throw persistenceError;
                 }
             }
         } catch (err) {
-            appLogger.error('ingestion', 'PROFILE_FILE_FAILED', 'Failed to profile dataset file.', { error: err, meta: { fileName: file.name } });
-            alert('Failed to process file.');
+            appLogger.error('ingestion', 'IMPORT_DATASET_FAILED', 'Failed to profile or persist dataset file.', {
+                error: err,
+                meta: {
+                    extension: file.name.split('.').pop()?.toLowerCase() || 'unknown',
+                    sizeBytes: file.size,
+                    sheetSelected: Boolean(importOptions.sheetName),
+                    stage: err instanceof DatasetImportError ? err.stage : importProgress?.stage,
+                    code: err instanceof DatasetImportError ? err.code : undefined,
+                    ...(err instanceof DatasetImportError ? err.diagnostics : {})
+                }
+            });
+            setImportError(importFailureMessage(err));
             setStep('main');
         } finally {
             setIsProfiling(false);
-            resetImportOptions();
-
+            if (completed) resetImportOptions();
         }
     };
 
@@ -343,7 +528,7 @@ function DashboardContent() {
 
     const handleLoadSavedReport = async (report: SavedReport) => {
         setIsProfiling(true);
-        setStep('profiling');
+        setStep('report-loading');
         try {
             // 1. Find the dataset metadata
             let ds = savedDatasets.find((d: SavedDataset) => d.id === report.dataset_id);
@@ -359,11 +544,20 @@ function DashboardContent() {
             });
             const syncedDataset = await ensureDatasetAnalyticsTable(ds, profile);
             setDataset({ id: syncedDataset.id, name: syncedDataset.name, ...profile });
+            setQuickResultWidgets(report.widgets as Widget[]);
+            setQuickResultPresentation(report.presentation
+                ? { ...report.presentation, title: report.name }
+                : {
+                    title: report.name,
+                    subtitle: '',
+                    templateId: 'modern',
+                    source: 'quick-result'
+                });
 
-            // 2. Switch to canvas
+            // Existing reports open in the same presentation surface as Instant Wow.
             setInitialReportId(report.id);
             setInitialStory(null);
-            setStep('canvas');
+            setStep('quick');
         } catch (err) {
             appLogger.error('analytics', 'LOAD_SAVED_REPORT_FAILED', 'Failed to load saved report.', { error: err, meta: { reportId: report.id } });
             alert('Fallo al cargar el reporte.');
@@ -409,14 +603,22 @@ function DashboardContent() {
         appLogger.debug('ingestion', 'DELETE_DATASET_REQUESTED', 'Dataset deletion requested from dashboard.', {
             meta: { datasetId: ds.id }
         });
-        const reportsUsingDs = savedReports.filter(r => r.dataset_id === ds.id);
-        if (reportsUsingDs.length > 0) {
-            const names = reportsUsingDs.map(r => `"${r.name}"`).join(', ');
-            alert(`No se puede eliminar este dataset porque está siendo usado por los reportes: ${names}. Elimina los reportes primero.`);
+        try {
+            const dependencies = await getDatasetDeleteDependencies(ds.id);
+            if (dependencies.reportCount > 0 || dependencies.storyCount > 0) {
+                alert(formatDatasetDependencyMessage(dependencies));
+                return;
+            }
+        } catch (err) {
+            appLogger.error('ingestion', 'CHECK_DATASET_DEPENDENCIES_FAILED', 'Failed to inspect dataset dependencies before deletion.', {
+                error: err,
+                meta: { datasetId: ds.id }
+            });
+            alert('No pudimos verificar si el dataset está en uso. No se eliminó ningún dato.');
             return;
         }
 
-        if (window.confirm('¿Estás seguro de que deseas eliminar este dataset y todos sus datos?')) {
+        if (window.confirm('¿Estás seguro de que deseas eliminar este dataset?')) {
             try {
                 setIsProfiling(true);
                 appLogger.debug('ingestion', 'DELETE_DATASET_CONFIRMED', 'Deleting dataset from Supabase.', {
@@ -434,6 +636,7 @@ function DashboardContent() {
                 if (user) {
                     const updatedDatasets = await getDatasets(user.id);
                     setSavedDatasets(updatedDatasets);
+                    await Promise.all([fetchSavedReports(user.id), fetchSavedStories(user.id)]);
                 }
 
                 // Explicitly clear the current dataset if it was the one deleted
@@ -456,7 +659,8 @@ function DashboardContent() {
         if (confirm('¿Estás seguro de que deseas eliminar este reporte?')) {
             try {
                 if (user) await deleteReport(reportId, user.id);
-                if (user) fetchSavedReports(user.id);
+                setSavedReports((current) => current.filter((report) => report.id !== reportId));
+                if (user) await fetchSavedReports(user.id);
             } catch (error) {
                 alert('Error al eliminar el reporte.');
             }
@@ -467,7 +671,8 @@ function DashboardContent() {
         if (confirm('¿Estás seguro de que deseas eliminar esta Story?')) {
             try {
                 if (user) await deleteStory(storyId, user.id);
-                if (user) fetchSavedStories(user.id);
+                setSavedStories((current) => current.filter((story) => story.id !== storyId));
+                if (user) await fetchSavedStories(user.id);
             } catch {
                 alert('Error al eliminar la Story.');
             }
@@ -479,9 +684,10 @@ function DashboardContent() {
         if (newName && newName.trim() !== '' && newName !== report.name) {
             try {
                 if (user) await updateReportName(report.id, newName.trim(), user.id);
-                if (user) fetchSavedReports(user.id);
+                setSavedReports((current) => current.map((item) => item.id === report.id ? { ...item, name: newName.trim() } : item));
+                if (user) await fetchSavedReports(user.id);
             } catch {
-                alert('Error al eliminar el reporte.');
+                alert('Error al cambiar el nombre del reporte.');
             }
         }
     };
@@ -503,7 +709,20 @@ function DashboardContent() {
         return <LoginView />;
     }
 
+    const handleBackToReportPreview = () => {
+        if (hasUnsavedChanges) {
+            setPendingNavigation({ step: 'quick' });
+            setShowConfirmModal(true);
+            return;
+        }
+        setStep('quick');
+    };
+
     const renderContent = () => {
+        if (step === 'report-loading') {
+            return <ReportPreloader />;
+        }
+
         if (step === 'canvas' && dataset) {
             return (
                 <ReportCanvas
@@ -514,6 +733,14 @@ function DashboardContent() {
                     initialPresentation={quickResultPresentation || undefined}
                     savedDatasets={savedDatasets}
                     onChangesStatusChange={(val) => setHasUnsavedChanges(val)}
+                    onReportSaved={handleReportSaved}
+                    onBackToPreview={handleBackToReportPreview}
+                    onReportDeleted={() => {
+                        setHasUnsavedChanges(false);
+                        setStep('main');
+                        setActiveView('reports');
+                        if (user) void fetchSavedReports(user.id);
+                    }}
                     onSwitchDataset={(ds) => {
                         setHasUnsavedChanges(false);
                         handleLoadSavedDataset(ds);
@@ -529,7 +756,9 @@ function DashboardContent() {
                     initialWidgets={quickResultWidgets}
                     initialPresentation={quickResultPresentation}
                     initialReportId={initialReportId}
+                    prepareBeforeReveal={Boolean(initialReportId)}
                     userId={user.id}
+                    onReportSaved={handleReportSaved}
                     onRefine={({ widgets, presentation, reportId }) => {
                         setQuickResultWidgets(widgets);
                         setQuickResultPresentation(presentation);
@@ -820,8 +1049,10 @@ function DashboardContent() {
                                     <Plus size={18} />
                                     {t('dashboard.new_dataset')}
                                 </button>
-                                <div style={{ fontSize: '0.875rem', color: savedDatasets.length >= 3 ? '#fbbf24' : 'var(--text-muted)', background: 'var(--surface)', padding: '4px 12px', borderRadius: '20px', border: '1px solid var(--border)' }}>
-                                    {savedDatasets.length}/3 {t('dashboard.my_datasets')}
+                                <div style={{ fontSize: '0.875rem', color: accountLimits.maxDatasets !== null && savedDatasets.length >= accountLimits.maxDatasets ? '#fbbf24' : 'var(--text-muted)', background: 'var(--surface)', padding: '4px 12px', borderRadius: '20px', border: '1px solid var(--border)' }}>
+                                    {accountLimits.maxDatasets === null
+                                        ? `${savedDatasets.length} · Sin límite`
+                                        : `${savedDatasets.length}/${accountLimits.maxDatasets}`} {t('dashboard.my_datasets')}
                                 </div>
                             </div>
                         </header>
@@ -969,6 +1200,7 @@ function DashboardContent() {
                                         className="btn-secondary"
                                         style={{ flex: 1, padding: '12px' }}
                                         onClick={resetImportOptions}
+                                        disabled={isProfiling}
                                     >
                                         Cancelar
                                     </button>
@@ -976,20 +1208,67 @@ function DashboardContent() {
                                         className="btn-primary"
                                         style={{ flex: 2, padding: '12px' }}
                                         onClick={() => processFile(pendingImportFile, buildImportOptions())}
+                                        disabled={isProfiling}
                                     >
-                                        Procesar archivo
+                                        {isProfiling ? 'Procesando...' : importError ? 'Reintentar importación' : 'Procesar archivo'}
                                     </button>
                                 </div>
+
+                                {importProgress && (
+                                    <div
+                                        aria-live="polite"
+                                        style={{
+                                            marginTop: '20px',
+                                            padding: '16px',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: '8px',
+                                            background: 'var(--surface-light)'
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', marginBottom: '10px' }}>
+                                            <strong style={{ fontSize: '0.875rem' }}>
+                                                {{
+                                                    reading: 'Leyendo archivo',
+                                                    profiling: 'Analizando columnas y tipos',
+                                                    normalizing: 'Normalizando datos',
+                                                    uploading: 'Guardando archivos',
+                                                    persisting: 'Persistiendo filas',
+                                                    finalizing: 'Verificando y finalizando',
+                                                    complete: 'Importación completada'
+                                                }[importProgress.stage]}
+                                            </strong>
+                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                                                {Math.round((importProgress.overallProgress ?? importProgress.progress) * 100)}%
+                                            </span>
+                                        </div>
+                                        <div style={{ height: '6px', overflow: 'hidden', background: 'var(--border)', borderRadius: '999px' }}>
+                                            <div
+                                                style={{
+                                                    width: `${Math.round((importProgress.overallProgress ?? importProgress.progress) * 100)}%`,
+                                                    height: '100%',
+                                                    background: 'var(--primary)',
+                                                    transition: 'width 160ms ease-out'
+                                                }}
+                                            />
+                                        </div>
+                                        {typeof importProgress.processedRows === 'number' && typeof importProgress.totalRows === 'number' && (
+                                            <p style={{ margin: '10px 0 0', color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                                                {importProgress.processedRows.toLocaleString()} de {importProgress.totalRows.toLocaleString()} filas
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {importError && !isProfiling && (
+                                    <div role="alert" style={{ marginTop: '20px', color: 'var(--danger-text)', fontSize: '0.875rem' }}>
+                                        {importError}
+                                    </div>
+                                )}
                             </div>
                         ) : (
                             <FileDropzone onFileSelect={handleFileSelect} />
                         )}
 
-                        {isProfiling && (
-                            <div style={{ marginTop: '24px', textAlign: 'center' }}>
-                                <p className="animate-pulse">Procesando archivo...</p>
-                            </div>
-                        )}
                     </div>
                 );
             case 'reports':
@@ -1120,6 +1399,17 @@ function DashboardContent() {
                 );
             case 'settings':
                 return <SettingsView />;
+            case 'admin':
+                return accountLimits.role === 'superadmin'
+                    ? <AdminUsersView />
+                    : (
+                        <div style={{ padding: '40px' }}>
+                            <div className="glass-card" style={{ padding: '32px', maxWidth: '560px' }}>
+                                <h2 style={{ marginBottom: '8px' }}>Acceso denegado</h2>
+                                <p style={{ color: 'var(--text-muted)' }}>Esta sección requiere acceso SUPERADMIN.</p>
+                            </div>
+                        </div>
+                    );
             default:
                 return null;
         }
@@ -1132,6 +1422,7 @@ function DashboardContent() {
             onLogout={handleLogout}
             userName={user.user_metadata.full_name || user.email}
             editorMode={step === 'canvas'}
+            isSuperadmin={accountLimits.role === 'superadmin'}
         >
             {renderContent()}
 

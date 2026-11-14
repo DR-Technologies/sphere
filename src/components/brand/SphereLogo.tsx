@@ -24,25 +24,29 @@ export default function SphereLogo({
   return (
     <span
       className={`sphere-logo appearance-${appearance} ${compact ? 'compact' : ''} ${className}`.trim()}
-      style={{ width: compact ? height : width, height, ['--sphere-logo-label-size' as string]: `${labelSize}px` }}
+      style={{
+        width: compact ? height : width,
+        height,
+        ['--sphere-logo-label-size' as string]: `${labelSize}px`,
+        ['--sphere-logo-height' as string]: `${height}px`,
+        ['--sphere-wordmark-width' as string]: `${Math.round(height * (380 / 94))}px`
+      }}
     >
-      {!compact ? (
-        <Image
-          className="sphere-wordmark"
-          src="/brand/logoSphere.png"
-          alt={alt}
-          width={width}
-          height={height}
-          priority
-        />
-      ) : null}
+      <Image
+        className="sphere-wordmark"
+        src="/brand/logoSphere.png"
+        alt={alt}
+        width={380}
+        height={94}
+        priority
+      />
       <span className="sphere-mark-lockup">
         <Image
           className="sphere-mark"
-          src="/brand/favicon.png"
+          src="/brand/logoModoOscuro.png"
           alt={compact ? alt : ''}
-          width={height}
-          height={height}
+          width={94}
+          height={94}
           priority
         />
         {!compact ? <span>{alt}</span> : null}
@@ -54,6 +58,7 @@ export default function SphereLogo({
           align-items: center;
           flex: none;
           min-width: 0;
+          overflow: hidden;
         }
         .sphere-logo :global(.sphere-wordmark) {
           width: 100%;
@@ -83,6 +88,16 @@ export default function SphereLogo({
         .sphere-logo.appearance-dark .sphere-mark-lockup,
         :global(html.dark) .sphere-logo.appearance-auto .sphere-mark-lockup {
           display: inline-flex;
+        }
+        .sphere-logo.compact :global(.sphere-wordmark) {
+          width: var(--sphere-wordmark-width);
+          height: var(--sphere-logo-height);
+          max-width: none;
+          flex: none;
+        }
+        .sphere-logo.compact.appearance-light .sphere-mark-lockup,
+        :global(html.light) .sphere-logo.compact.appearance-auto .sphere-mark-lockup {
+          display: none;
         }
         .sphere-logo.appearance-dark :global(.sphere-wordmark),
         :global(html.dark) .sphere-logo.appearance-auto :global(.sphere-wordmark) {

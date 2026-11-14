@@ -188,3 +188,87 @@
 - **Reason:** valida el lifecycle de `Export -> Processing -> Completed -> Download` sin volver frágil ni lenta la suite end-to-end.
 - **Consequences:** el producto real sigue usando el pipeline productivo; el atajo vive únicamente detrás de la bandera de pruebas.
 - **Status:** `ACCEPTED`
+
+## 32. Los reportes existentes son la única definición de consumo del límite
+- **Decision:** el límite de tres reportes cuenta filas reales de `reports` por `user_id + dataset_id`; no existen estados locales o filtros alternativos de “reporte activo”.
+- **Reason:** el Dashboard podía quedar desactualizado y mostrar menos reportes que el conteo usado al crear.
+- **Consequences:** Save actualiza el mismo ID, Save As inserta uno nuevo, delete libera el slot y todas las mutaciones refrescan el listado autoritativo.
+- **Status:** `ACCEPTED`
+
+## 33. Los deletes de aggregates se ejecutan en base de datos
+- **Decision:** Report y Story usan funciones transaccionales con cleanup de sus dependencias. Dataset usa un endpoint autenticado y un RPC transaccional, pero su eliminación se bloquea mientras tenga Reports o Stories asociados.
+- **Reason:** secuencias de deletes desde cliente podían fallar parcialmente y dejar publicaciones o relaciones huérfanas.
+- **Consequences:** RLS permanece activa, no existe cascada destructiva desde Dataset y el usuario debe eliminar explícitamente Reports y Stories antes de borrar la fuente. Un Dataset ya independiente sí limpia su tabla analítica normalizada y artefactos propios.
+- **Status:** `ACCEPTED`
+
+## 34. Solo un snapshot puede estar activo por entidad privada
+- **Decision:** Report y Story tienen como máximo un snapshot no revocado; republish actualiza ese artefacto y settings resuelve siempre el slug activo.
+- **Reason:** slugs revocados o duplicados podían presentarse como URL vigente.
+- **Consequences:** los lookups filtran `revoked_at`, priorizan la publicación más reciente y una restricción parcial protege la invariancia.
+- **Status:** `ACCEPTED`
+
+## 35. App Theme y Report Template son independientes
+- **Decision:** el shell consume Light/Dark del usuario, mientras el Report stage consume exclusivamente su template Modern/Editorial/Dark.
+- **Reason:** superficies translúcidas de un reporte claro perdían contraste dentro de la aplicación oscura.
+- **Consequences:** Refine crea un stage visual autocontenido sin modificar geometría, layout canónico ni exportación.
+- **Status:** `ACCEPTED`
+
+## 36. Un Report guardado abre primero en la superficie Instant Wow
+- **Decision:** seleccionar un Report existente carga su definición persistida en `QuickResultView`; no regenera recomendaciones ni entra directamente a Refine.
+- **Reason:** la experiencia de consumo y edición ligera debe preceder al editor técnico, manteniendo el principio de baja fricción.
+- **Consequences:** Create Story, Publish, PNG y Refine comparten la misma identidad de Report; Save actualiza el mismo ID y Refine puede regresar a la previsualización.
+- **Status:** `ACCEPTED`
+
+## 37. Identidad, rol de seguridad y suscripción comercial son contratos separados
+- **Decision:** Supabase Auth administra identidad; `user_roles` administra rol/estado y overrides explícitos; Stripe administra la suscripción comercial mediante estado sincronizado por webhook.
+- **Reason:** seleccionar un plan en cliente no puede conceder privilegios, y un SUPERADMIN debe poder asignar acceso sin falsificar una suscripción pagada.
+- **Consequences:** el plan efectivo tiene precedencia determinística, Checkout/Portal son server-side y Stripe Test Mode es obligatorio hasta validar credenciales externas.
+- **Status:** `ACCEPTED`
+
+## 38. La eliminación de cuenta es suspend-first, reintentable y Auth-last
+- **Decision:** una solicitud bloquea inmediatamente el acceso, persiste inventario y estado, limpia datos/artefactos por etapas y elimina el usuario de Auth únicamente al final.
+- **Reason:** Storage, filesystem, Stripe y PostgreSQL no comparten una transacción; ocultar fallos produciría cuentas aparentemente eliminadas con recursos huérfanos.
+- **Consequences:** un fallo queda en estado `failed` con credencial opaca de retry; el trigger del último SUPERADMIN permanece como protección transaccional.
+- **Status:** `ACCEPTED`
+
+## 37. Los límites de cuenta son autoritativos en base de datos y dependen del rol
+- **Decision:** `user_roles` define `standard` o `superadmin`; los triggers protegen datasets y reportes bajo locks transaccionales. El rol no puede mutarse desde el cliente autenticado.
+- **Reason:** los controles frontend no protegen llamadas directas ni carreras concurrentes.
+- **Consequences:** standard conserva límites `3/3/9`; superadmin elimina solo los límites de datasets y reportes, mientras nueve widgets sigue siendo universal.
+- **Status:** `ACCEPTED`
+
+## 38. Dataset no es dueño destructivo de Reports o Stories
+- **Decision:** las FKs desde Reports, Stories y snapshots hacia Dataset usan restricción y `delete_dataset_lifecycle` falla si encuentra dependencias.
+- **Reason:** eliminar una fuente no debe destruir resultados construidos sin una acción explícita del usuario.
+- **Consequences:** la UI muestra conteo y nombres de Reports, la base evita bypass y las eliminaciones independientes conservan su lifecycle existente.
+- **Status:** `ACCEPTED`
+
+## 39. Rol, plan y estado de cuenta son conceptos independientes
+- **Decision:** `user_roles.role` define autoridad, `subscription_plan` registra el nivel de acceso administrativo y `status` determina si la cuenta puede operar.
+- **Reason:** un plan comercial futuro no debe conceder privilegios de seguridad ni mezclarse con los límites actuales.
+- **Consequences:** los planes `free`, `pro` y `enterprise` no alteran límites en V1; standard conserva `3/3/9` y SUPERADMIN conserva ilimitados datasets/reportes con nueve widgets.
+- **Status:** `ACCEPTED`
+
+## 40. La administración de Supabase Auth existe solo en servidor
+- **Decision:** listar, invitar, suspender y reactivar usuarios pasa por rutas server-side que verifican un SUPERADMIN activo y utilizan `service_role` fuera del bundle del navegador.
+- **Reason:** Supabase Auth Admin no puede exponerse al cliente ni confiar en controles visuales.
+- **Consequences:** las RPC administrativas solo son ejecutables por `service_role`, cada acción relevante queda auditada y los cambios Auth/DB usan compensación ante fallos parciales.
+- **Status:** `ACCEPTED`
+
+## 41. El último SUPERADMIN activo está protegido en base de datos
+- **Decision:** un trigger transaccional con lock impide suspender, degradar o eliminar al último SUPERADMIN activo; un administrador tampoco puede cambiar su propio rol o estado.
+- **Reason:** la protección debe resistir concurrencia y llamadas directas, no solo deshabilitar controles en UI.
+- **Consequences:** cualquier delegación o retiro de privilegios requiere que otra cuenta SUPERADMIN activa permanezca disponible.
+- **Status:** `ACCEPTED`
+
+## 42. Reports y artefactos de Dataset son privados por defecto
+- **Decision:** `datasets` y `reports` usan RLS owner-scoped; el bucket `files` es privado y se accede mediante rutas internas o URLs firmadas temporales.
+- **Reason:** los filtros del cliente y las URLs públicas permanentes no constituyen una frontera de seguridad entre usuarios.
+- **Consequences:** compartir Reports sigue dependiendo exclusivamente de snapshots materializados activos; las URLs públicas legacy de artefactos se normalizan a rutas sin migrar ni duplicar archivos.
+- **Status:** `ACCEPTED`
+
+## 43. La eliminación de cuenta verifica un OTP consumible para el mismo usuario
+- **Decision:** el código de eliminación se verifica con Supabase Auth mediante un OTP de email real y se compara el `user.id` resultante con la sesión que inició la operación.
+- **Reason:** el nonce de `reauthenticate()` solo es validado por Supabase durante un cambio de contraseña; enviarlo con una actualización de metadata no probaba posesión del código.
+- **Consequences:** un código arbitrario o perteneciente a otra cuenta no inicia la eliminación; los retries usan únicamente la credencial opaca de recuperación emitida después de una verificación válida.
+- **Status:** `ACCEPTED`

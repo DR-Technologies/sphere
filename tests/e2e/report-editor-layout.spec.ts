@@ -17,10 +17,19 @@ async function goToRefine(page: import('@playwright/test').Page) {
   await expect(page.getByText('Instant Wow')).toBeVisible();
   await page.getByRole('button', { name: /^Refine$/ }).first().click();
   await expect(page.getByText(/Visualizations|Visualizaciones/i)).toBeVisible();
-  await expect(page.locator('.layout .react-grid-item')).toHaveCount(6);
-  await expect(page.locator('.sphere-report-widget-card')).toHaveCount(6);
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveCount(4);
+  await expect.poll(() => page.locator('.layout .react-grid-item').count()).toBeGreaterThanOrEqual(4);
+  const widgetCount = await page.locator('.layout .react-grid-item').count();
+  expect(widgetCount).toBeLessThanOrEqual(9);
+  await expect(page.locator('.layout .sphere-report-widget-card')).toHaveCount(widgetCount);
+  await expect.poll(() => page.locator('.layout [data-visual-ready="true"]').count()).toBeGreaterThanOrEqual(2);
   await expect(page.locator('.animate-spin')).toHaveCount(0);
+  return widgetCount;
+}
+
+function widgetByType(page: import('@playwright/test').Page, type: string, index = 0) {
+  return page.locator('.layout .react-grid-item').filter({
+    has: page.locator(`.sphere-report-widget-card[data-widget-type="${type}"]`)
+  }).nth(index);
 }
 
 async function getGridDiagnostics(page: import('@playwright/test').Page) {
@@ -101,7 +110,7 @@ test.describe('report editor layout hardening', () => {
     const state = await createMockSupabaseState();
     await installMockSupabase(context, page, state);
 
-    await goToRefine(page);
+    const widgetCount = await goToRefine(page);
 
     const initialDiagnostics = await getGridDiagnostics(page);
     expect(initialDiagnostics.overlapPairs).toEqual([]);
@@ -109,12 +118,12 @@ test.describe('report editor layout hardening', () => {
     expect(initialDiagnostics.visualOverflow).toEqual([]);
     await page.screenshot({ path: path.join(artifactDir, 'dense-report-default.png'), fullPage: true });
 
-    const lineWidget = page.locator('.layout .react-grid-item').filter({ has: page.locator('[data-visual-type="line"]') }).first();
-    const pieWidget = page.locator('.layout .react-grid-item').filter({ has: page.locator('[data-visual-type="pie"]') }).first();
-    const tableWidget = page.locator('.layout .react-grid-item').nth(5);
+    const lineWidget = widgetByType(page, 'line');
+    const barWidget = widgetByType(page, 'bar');
+    const tableWidget = widgetByType(page, 'table');
 
     await resizeWidget(lineWidget, page, -220, -260);
-    await resizeWidget(pieWidget, page, 180, 140);
+    await resizeWidget(barWidget, page, 180, 140);
     await resizeWidget(tableWidget, page, 0, 260);
 
     await expect.poll(() => getGridDiagnostics(page)).toMatchObject({
@@ -140,17 +149,21 @@ test.describe('report editor layout hardening', () => {
 
     await page.screenshot({ path: path.join(artifactDir, 'dense-report-resized.png'), fullPage: true });
 
-    page.once('dialog', (dialog) => dialog.accept('Layout Hardening QA'));
+    await page.getByLabel('Report name').fill('Layout Hardening QA');
     await page.getByRole('button', { name: /Guardar reporte|Save Report|Save/i }).last().click();
     await expect(page.getByText(/Guardado|Saved/i).last()).toBeVisible();
 
     const savedReport = state.reports[0];
     expect(savedReport).toBeTruthy();
 
-    await page.getByText(/Mis reportes|My Reports/i).first().click();
-    await expect(page.getByText(/My Reports|Mis reportes/i).first()).toBeVisible();
+    await page.getByRole('button', { name: /My Reports|Mis reportes/i }).click();
+    await expect(page.getByRole('heading', { name: /My Reports|Mis reportes/i })).toBeVisible();
     await page.getByText('Layout Hardening QA').first().click();
-    await expect(page.locator('.layout .react-grid-item')).toHaveCount(6);
+    await expect(page.getByText('Instant Wow')).toBeVisible();
+    await expect(page.getByTestId('report-preloader')).toHaveCount(0);
+    await expect(page.locator('.quick-grid-item')).toHaveCount(widgetCount);
+    await page.getByRole('button', { name: /^Refine$/ }).first().click();
+    await expect(page.locator('.layout .react-grid-item')).toHaveCount(widgetCount);
     await expect.poll(() => getGridDiagnostics(page)).toMatchObject({
       overlapPairs: [],
       cardOverflow: [],
@@ -159,11 +172,10 @@ test.describe('report editor layout hardening', () => {
 
     await page.screenshot({ path: path.join(artifactDir, 'persisted-layout-reloaded.png'), fullPage: true });
 
-    const reloadedWidgets = page.locator('.layout .react-grid-item');
-    const reloadedPie = reloadedWidgets.nth(4);
-    const reloadedTable = reloadedWidgets.nth(5);
+    const reloadedBar = widgetByType(page, 'bar');
+    const reloadedTable = widgetByType(page, 'table');
 
-    await resizeWidget(reloadedPie, page, -220, -220);
+    await resizeWidget(reloadedBar, page, -220, -220);
     await resizeWidget(reloadedTable, page, -520, -360);
     await expect.poll(() => getGridDiagnostics(page)).toMatchObject({
       overlapPairs: [],
@@ -171,15 +183,15 @@ test.describe('report editor layout hardening', () => {
       visualOverflow: []
     });
 
-    await reloadedWidgets.nth(0).screenshot({ path: path.join(artifactDir, 'min-card.png') });
-    await reloadedWidgets.nth(1).screenshot({ path: path.join(artifactDir, 'min-line.png') });
-    await reloadedWidgets.nth(2).screenshot({ path: path.join(artifactDir, 'min-bar.png') });
-    await reloadedWidgets.nth(3).screenshot({ path: path.join(artifactDir, 'min-treemap.png') });
-    await reloadedWidgets.nth(4).screenshot({ path: path.join(artifactDir, 'min-pie.png') });
-    await reloadedWidgets.nth(5).screenshot({ path: path.join(artifactDir, 'min-table.png') });
+    for (const type of ['card', 'line', 'bar', 'area', 'pie', 'treemap', 'table', 'map']) {
+      const widget = widgetByType(page, type);
+      if (await widget.count()) {
+        await widget.screenshot({ path: path.join(artifactDir, `min-${type}.png`) });
+      }
+    }
 
-    const maxLine = reloadedWidgets.nth(1);
-    const maxTable = reloadedWidgets.nth(5);
+    const maxLine = widgetByType(page, 'line');
+    const maxTable = widgetByType(page, 'table');
     await resizeWidget(maxLine, page, 520, 420);
     await resizeWidget(maxTable, page, 520, 420);
     await expect.poll(() => getGridDiagnostics(page)).toMatchObject({

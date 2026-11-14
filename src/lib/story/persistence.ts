@@ -147,13 +147,16 @@ export async function getStories(userId: string, datasetId?: string) {
 }
 
 export async function deleteStory(storyId: string, userId: string) {
-  const { error } = await supabase
-    .from('stories')
-    .delete()
-    .eq('id', storyId)
-    .eq('user_id', userId);
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Authenticated session required to delete Story.');
 
-  if (error) {
+  const response = await fetch(`/api/lifecycle/story-artifacts/${storyId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: string } | null;
+    const error = new Error(payload?.error || 'Story could not be deleted.');
     appLogger.error('story', 'DELETE_STORY_FAILED', 'Failed to delete story.', { error, meta: { storyId, userId } });
     throw error;
   }

@@ -11,6 +11,12 @@ interface GeometrySnapshot {
   widgets: Record<string, { title: string; left: number; top: number; width: number; height: number; xRatio: number; widthRatio: number }>;
 }
 
+async function expectRenderedChartsReady(root: import('@playwright/test').Locator) {
+  const animatedTypes = ['line', 'bar', 'area', 'pie', 'treemap'];
+  const chartCount = await root.locator(animatedTypes.map((type) => `[data-widget-type="${type}"]`).join(',')).count();
+  await expect.poll(() => root.locator('[data-visual-ready="true"]').count()).toBe(chartCount);
+}
+
 async function goToQuickResult(page: import('@playwright/test').Page) {
   await page.goto('/');
   await expect(page.getByText(/Upload Dataset|Subir dataset/).first()).toBeVisible();
@@ -20,9 +26,12 @@ async function goToQuickResult(page: import('@playwright/test').Page) {
   await page.locator('select').last().selectOption('DD/MM/YYYY');
   await page.getByRole('button', { name: /Procesar archivo|Process file/i }).click();
   await expect(page.getByText('Instant Wow').first()).toBeVisible();
-  await expect(page.locator('.quick-grid-item')).toHaveCount(6);
+  await expect.poll(() => page.locator('.quick-grid-item').count()).toBeGreaterThanOrEqual(4);
+  const widgetCount = await page.locator('.quick-grid-item').count();
+  expect(widgetCount).toBeLessThanOrEqual(9);
   await expect(page.locator('.animate-spin')).toHaveCount(0);
-  await expect.poll(async () => page.locator('.sphere-report-widget-card [data-visual-ready="true"]').count()).toBeGreaterThanOrEqual(4);
+  await expectRenderedChartsReady(page.locator('.sphere-presentation-grid').first());
+  return widgetCount;
 }
 
 async function readGeometry(page: import('@playwright/test').Page, rootSelector: string): Promise<GeometrySnapshot> {
@@ -87,7 +96,7 @@ test.describe('report presentation unification', () => {
     await installMockSupabase(context, page, state);
     await page.setViewportSize({ width: 1680, height: 1400 });
 
-    await goToQuickResult(page);
+    const widgetCount = await goToQuickResult(page);
 
     const quickGrid = page.locator('.sphere-presentation-grid').first();
     await quickGrid.screenshot({ path: path.join(artifactDir, 'instant-wow.png') });
@@ -124,9 +133,9 @@ test.describe('report presentation unification', () => {
 
     await page.getByRole('button', { name: /^Refine$/ }).first().click();
     await expect(page.getByText(/Visualizations|Visualizaciones/i)).toBeVisible();
-    await expect(page.locator('.layout .react-grid-item')).toHaveCount(6);
+    await expect(page.locator('.layout .react-grid-item')).toHaveCount(widgetCount);
     await expect(page.locator('.animate-spin')).toHaveCount(0);
-    await expect.poll(async () => page.locator('.layout .sphere-report-widget-card [data-visual-ready="true"]').count()).toBeGreaterThanOrEqual(4);
+    await expectRenderedChartsReady(page.locator('.layout'));
     await page.locator('.layout').screenshot({ path: path.join(artifactDir, 'refine.png') });
     const refineGeometry = await readGeometry(page, '.layout');
 

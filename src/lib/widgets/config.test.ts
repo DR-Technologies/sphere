@@ -32,4 +32,23 @@ describe('widget config sanitization', () => {
 
     expect(sanitized.aggregation).toBe('SUM');
   });
+
+  it('preserves an existing COUNT aggregation when normalizing a card widget', () => {
+    const countCard: Widget = {
+      id: 'count-card',
+      type: 'card',
+      title: 'Numero de registros',
+      xAxis: 'Categoria',
+      yAxis: 'Categoria',
+      aggregation: 'COUNT',
+      x: 0,
+      y: 0,
+      w: 3,
+      h: 2
+    };
+
+    const sanitized = sanitizeWidgetForType(countCard, 'card', dataset);
+
+    expect(sanitized.aggregation).toBe('COUNT');
+  });
 });

@@ -133,6 +133,7 @@ export function sanitizeWidgetForType(widget: Widget, nextType: ChartType, datas
     w: widget.w,
     h: widget.h,
     type: nextType,
+    aggregation: widget.aggregation || defaults.aggregation || 'SUM',
     xAxis: isExistingColumn(dataset.columns, widget.xAxis) ? widget.xAxis : (defaults.xAxis || ''),
     yAxis: isExistingColumn(dataset.columns, widget.yAxis) ? widget.yAxis : (defaults.yAxis || ''),
     showWidgetTitle: widget.showWidgetTitle ?? true,

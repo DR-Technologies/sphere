@@ -19,19 +19,23 @@ async function goToQuickResult(page: Page) {
 }
 
 test.describe('Official Sphere brand assets', () => {
-  test('shell uses the official wordmark in Light and official mark in compact mode', async ({ page, context }) => {
+  test('shell uses the official Light logo and the collapsed logo expands navigation', async ({ page, context }) => {
     await setTheme(context, 'light');
     const state = await createMockSupabaseState();
     await installMockSupabase(context, page, state);
     await page.goto('/');
 
     const header = page.locator('.sidebar-header');
-    await expect(header.locator('img[alt="Sphere"]')).toHaveAttribute('src', /logoSphere\.png/);
+    await expect(header.locator('.sphere-wordmark')).toHaveAttribute('src', /logoSphere\.png/);
     await header.screenshot({ path: artifact('shell-light.png') });
 
     await page.getByRole('button', { name: 'Collapse sidebar' }).click();
-    await expect(header.locator('img[alt="Sphere"]')).toHaveAttribute('src', /favicon\.png/);
+    await expect(page.getByRole('button', { name: 'Expandir navegación' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Expand sidebar' })).toHaveCount(0);
+    await expect(header.locator('.sphere-wordmark')).toHaveAttribute('src', /logoSphere\.png/);
     await header.screenshot({ path: artifact('shell-compact.png') });
+    await page.getByRole('button', { name: 'Expandir navegación' }).click();
+    await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
 
     await expect(page.locator('link[rel="icon"][href="/brand/favicon.png"]')).toHaveCount(1);
     await expect(page.locator('link[rel*="icon"][href*="favicon.ico"]')).toHaveCount(0);
@@ -48,7 +52,7 @@ test.describe('Official Sphere brand assets', () => {
     await page.goto('/');
 
     const header = page.locator('.sidebar-header');
-    await expect(header.locator('img[src*="favicon.png"]')).toBeVisible();
+    await expect(header.locator('img[src*="logoModoOscuro.png"]')).toBeVisible();
     await expect(header.getByText('Sphere')).toBeVisible();
     await header.screenshot({ path: artifact('shell-dark.png') });
 

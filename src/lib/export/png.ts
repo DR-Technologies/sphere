@@ -1,6 +1,6 @@
 import { toPng } from 'html-to-image';
 
-async function waitForExportReady(element: HTMLElement, selector?: string) {
+export async function waitForExportReady(element: HTMLElement, selector?: string) {
   if (document.fonts?.ready) {
     await document.fonts.ready;
   }
@@ -14,7 +14,7 @@ async function waitForExportReady(element: HTMLElement, selector?: string) {
     const deadline = window.setTimeout(() => reject(new Error('PNG export surface did not become ready.')), 5000);
 
     const check = () => {
-      if (element.querySelector(selector)) {
+      if (element.matches(selector) || element.querySelector(selector)) {
         window.clearTimeout(deadline);
         resolve();
         return true;
@@ -34,28 +34,37 @@ async function waitForExportReady(element: HTMLElement, selector?: string) {
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 
-export async function exportElementToPng(
+export async function renderElementToPngDataUrl(
   element: HTMLElement,
-  fileName: string,
-  options?: { waitForSelector?: string }
+  options?: { waitForSelector?: string; pixelRatio?: number; canvasScale?: number }
 ) {
   await waitForExportReady(element, options?.waitForSelector);
   const width = Math.ceil(element.scrollWidth);
   const height = Math.ceil(element.scrollHeight);
+  const pixelRatio = options?.canvasScale ? 1 : (options?.pixelRatio ?? 2);
+  const canvasScale = options?.canvasScale ?? pixelRatio;
   const computed = window.getComputedStyle(element);
-  const dataUrl = await toPng(element, {
+  return toPng(element, {
     cacheBust: true,
-    pixelRatio: 2,
+    pixelRatio,
     width,
     height,
-    canvasWidth: width * 2,
-    canvasHeight: height * 2,
+    canvasWidth: width * canvasScale,
+    canvasHeight: height * canvasScale,
     backgroundColor: computed.backgroundColor === 'rgba(0, 0, 0, 0)' ? '#0b1020' : computed.backgroundColor,
     style: {
       width: `${width}px`,
       height: `${height}px`
     }
   });
+}
+
+export async function exportElementToPng(
+  element: HTMLElement,
+  fileName: string,
+  options?: { waitForSelector?: string }
+) {
+  const dataUrl = await renderElementToPngDataUrl(element, options);
 
   const link = document.createElement('a');
   link.download = fileName.endsWith('.png') ? fileName : `${fileName}.png`;

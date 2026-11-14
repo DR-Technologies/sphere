@@ -1,21 +1,22 @@
 'use client';
 
 import React from 'react';
-import { Home, Database, Upload, LogOut, Activity as SphereIcon, Settings } from 'lucide-react';
+import { Home, Database, Upload, LogOut, Activity as SphereIcon, Settings, ShieldCheck } from 'lucide-react';
 import { useTranslation } from '@/lib/i18n/LanguageContext';
 import SphereLogo from '@/components/brand/SphereLogo';
 
 interface SidebarProps {
-    activeView: 'home' | 'datasets' | 'upload' | 'reports' | 'settings';
-    onViewChange: (view: 'home' | 'datasets' | 'upload' | 'reports' | 'settings') => void;
+    activeView: 'home' | 'datasets' | 'upload' | 'reports' | 'settings' | 'admin';
+    onViewChange: (view: 'home' | 'datasets' | 'upload' | 'reports' | 'settings' | 'admin') => void;
     onLogout: () => void;
     userName?: string;
     mobileMode?: boolean;
     mobileOpen?: boolean;
     compactMode?: boolean;
+    isSuperadmin?: boolean;
 }
 
-export default function Sidebar({ activeView, onViewChange, onLogout, userName, mobileMode = false, mobileOpen = false, compactMode = false }: SidebarProps) {
+export default function Sidebar({ activeView, onViewChange, onLogout, userName, mobileMode = false, mobileOpen = false, compactMode = false, isSuperadmin = false }: SidebarProps) {
     const [isCollapsed, setIsCollapsed] = React.useState(false);
 
     const { t } = useTranslation();
@@ -31,6 +32,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName, 
         { id: 'reports', label: t('sidebar.reports'), icon: <SphereIcon size={20} /> },
         { id: 'upload', label: t('sidebar.upload'), icon: <Upload size={20} /> },
         { id: 'settings', label: t('sidebar.settings'), icon: <Settings size={20} /> },
+        ...(isSuperadmin ? [{ id: 'admin', label: t('sidebar.admin'), icon: <ShieldCheck size={20} /> }] : []),
     ];
 
     const toggleCollapse = () => {
@@ -43,20 +45,28 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName, 
     return (
         <aside className={`sidebar ${isCollapsed ? 'collapsed' : ''} ${mobileMode ? 'mobile-mode' : ''} ${mobileOpen ? 'mobile-open' : ''} ${isRailMode ? 'rail-mode' : ''}`}>
             <div className="sidebar-header">
-                <div className="logo-container">
-                    <SphereLogo compact={!showLabels} width={130} height={32} />
-                </div>
-                <button
-                    className="collapse-toggle"
-                    onClick={toggleCollapse}
-                    aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                    title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                >
-                    <span className={`panel-toggle-icon ${isCollapsed ? 'is-collapsed' : 'is-expanded'}`} aria-hidden="true">
-                        <span className="panel-toggle-main" />
-                        <span className="panel-toggle-side" />
-                    </span>
-                </button>
+                {isCollapsed && !mobileMode && !isRailMode ? (
+                    <button className="collapsed-logo-button" onClick={toggleCollapse} aria-label="Expandir navegación" title="Expandir navegación">
+                        <SphereLogo compact width={130} height={32} />
+                    </button>
+                ) : (
+                    <div className="logo-container">
+                        <SphereLogo compact={!showLabels} width={130} height={32} />
+                    </div>
+                )}
+                {!isCollapsed || mobileMode ? (
+                    <button
+                        className="collapse-toggle"
+                        onClick={toggleCollapse}
+                        aria-label="Collapse sidebar"
+                        title="Collapse sidebar"
+                    >
+                        <span className="panel-toggle-icon is-expanded" aria-hidden="true">
+                            <span className="panel-toggle-main" />
+                            <span className="panel-toggle-side" />
+                        </span>
+                    </button>
+                ) : null}
             </div>
 
             <nav className="sidebar-nav">
@@ -64,7 +74,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName, 
                     <button
                         key={item.id}
                         className={`nav-item ${activeView === item.id ? 'active' : ''}`}
-                        onClick={() => onViewChange(item.id as 'home' | 'datasets' | 'upload' | 'reports')}
+                        onClick={() => onViewChange(item.id as SidebarProps['activeView'])}
                         title={!showLabels ? item.label : undefined}
                     >
                         {item.icon}
@@ -146,7 +156,7 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName, 
 
                 .sidebar.collapsed .sidebar-header {
                     padding: 12px 10px 10px;
-                    justify-content: space-between;
+                    justify-content: center;
                 }
 
                 .sidebar.rail-mode .sidebar-header {
@@ -164,6 +174,24 @@ export default function Sidebar({ activeView, onViewChange, onLogout, userName, 
                     align-items: center;
                     gap: 8px;
                     min-width: 0;
+                }
+
+                .collapsed-logo-button {
+                    width: 32px;
+                    height: 32px;
+                    padding: 0;
+                    border: 0;
+                    background: transparent;
+                    color: inherit;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+
+                .collapsed-logo-button:focus-visible {
+                    outline: 2px solid var(--primary);
+                    outline-offset: 3px;
                 }
 
                 .collapse-toggle {

@@ -32,6 +32,28 @@ export interface DatasetImportOptions {
   dateFormat?: DateInputFormat;
 }
 
+export type DatasetProcessingStage =
+  | 'reading'
+  | 'profiling'
+  | 'normalizing'
+  | 'uploading'
+  | 'persisting'
+  | 'finalizing'
+  | 'complete';
+
+export interface DatasetProcessingProgress {
+  stage: DatasetProcessingStage;
+  progress: number;
+  overallProgress?: number;
+  processedRows?: number;
+  totalRows?: number;
+}
+
+export interface DatasetProfileExecutionOptions {
+  onProgress?: (progress: DatasetProcessingProgress) => void;
+  chunkSize?: number;
+}
+
 export interface NormalizedDatasetManifest {
   version: 1;
   generated_at: string;
@@ -45,7 +67,7 @@ export interface NormalizedDatasetManifest {
 }
 
 export interface NormalizedDatasetArtifacts {
-  normalizedCsv: string;
+  normalizedCsv: string | Blob;
   normalizedRows: DatasetRow[];
   manifest: NormalizedDatasetManifest;
 }
@@ -63,8 +85,8 @@ export interface ProfileFromUrlOptions {
 }
 
 export interface AnalyticsProvider {
-  profileFile(file: File, options?: DatasetImportOptions): Promise<DatasetProfileResult>;
+  profileFile(file: File, options?: DatasetImportOptions, execution?: DatasetProfileExecutionOptions): Promise<DatasetProfileResult>;
   profileFromUrl(url: string, name: string, sheetName?: string, options?: ProfileFromUrlOptions): Promise<DatasetProfileResult>;
-  runQuery(query: string, options?: { datasetId?: string }): Promise<Record<string, any>[]>;
+  runQuery(query: string, options?: { datasetId?: string }): Promise<DatasetRow[]>;
   getExcelSheetNames(file: File): Promise<string[]>;
 }

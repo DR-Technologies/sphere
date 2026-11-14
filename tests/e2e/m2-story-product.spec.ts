@@ -56,19 +56,30 @@ test.describe('M2 Story Product', () => {
     await toggleStoryPlayback(page);
 
     await sceneCard(page, 'Evolution').click();
-    await expect(page.getByRole('heading', { name: /Revenue por Month/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Revenue by Month/i })).toBeVisible();
+    await expect(page.locator('[data-story-axis="x"]')).toHaveCount(5);
+    await expect(page.locator('[data-story-axis="x"]').first()).toContainText(/Aug 2025/i);
     await toggleStoryPlayback(page);
     await page.waitForTimeout(650);
     await toggleStoryPlayback(page);
     await storyFrame.screenshot({ path: screenshot('story-modern-16x9.png') });
 
+    await sceneCard(page, 'Ranking').click();
+    await toggleStoryPlayback(page);
+    await page.waitForTimeout(700);
+    await toggleStoryPlayback(page);
+    await storyFrame.screenshot({ path: screenshot('story-ranking-16x9.png') });
+
     const slider = page.locator('input[type="range"]').first();
+    const standardDuration = Number(await slider.getAttribute('max'));
+    expect(standardDuration).toBeGreaterThanOrEqual(20_000);
+    expect(standardDuration).toBeLessThanOrEqual(24_000);
     await sceneCard(page, 'Race').click();
     await expect.poll(async () => {
       const value = await page.locator('[data-story-current-time-ms]').getAttribute('data-story-current-time-ms');
       return Number(value || 0);
     }).toBeGreaterThan(1000);
-    await expect(page.getByRole('heading', { name: /Revenue en movimiento/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Revenue in motion/i })).toBeVisible();
     await toggleStoryPlayback(page);
     await page.waitForTimeout(700);
     await toggleStoryPlayback(page);
@@ -80,8 +91,16 @@ test.describe('M2 Story Product', () => {
     await storyFrame.screenshot({ path: screenshot('story-dark-16x9.png') });
     await page.getByRole('button', { name: /^Cinematic$/ }).click();
     await expect(page.getByRole('button', { name: /^Cinematic$/ })).toHaveClass(/active/);
+    await page.getByRole('button', { name: /^Dynamic$/ }).click();
+    await expect(page.getByRole('button', { name: /^Dynamic$/ })).toHaveClass(/active/);
+    await page.getByRole('button', { name: /^Smooth$/ }).click();
+    await expect(page.getByRole('button', { name: /^Smooth$/ })).toHaveClass(/active/);
 
     const durationBefore = Number(await slider.getAttribute('max'));
+    await page.getByRole('button', { name: /^Short$/ }).click();
+    await expect.poll(async () => Number(await slider.getAttribute('max'))).toBeLessThan(durationBefore);
+    await page.getByRole('button', { name: /^Standard$/ }).click();
+    await expect.poll(async () => Number(await slider.getAttribute('max'))).toBeGreaterThanOrEqual(20_000);
     await page.getByRole('button', { name: /^Extended$/ }).click();
     await expect.poll(async () => Number(await slider.getAttribute('max'))).toBeGreaterThan(durationBefore);
 
@@ -93,7 +112,18 @@ test.describe('M2 Story Product', () => {
       });
     }).toBe(true);
     await sceneCard(page, 'Evolution').click();
-    await expect(page.getByRole('heading', { name: /Revenue por Month/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Revenue by Month/i })).toBeVisible();
+    await expect(page.locator('[data-story-axis="x"]')).toHaveCount(3);
+    const portraitTicksFit = await page.locator('[data-story-axis="x"]').evaluateAll((ticks) => {
+      const svg = ticks[0]?.closest('svg');
+      if (!svg) return false;
+      const bounds = svg.getBoundingClientRect();
+      return ticks.every((tick) => {
+        const rect = tick.getBoundingClientRect();
+        return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+      });
+    });
+    expect(portraitTicksFit).toBe(true);
     await toggleStoryPlayback(page);
     await page.waitForTimeout(650);
     await toggleStoryPlayback(page);
@@ -134,7 +164,12 @@ test.describe('M2 Story Product', () => {
 
     await expect(page.locator('.scene-card')).toHaveCount(5);
     await expect(page.getByText(/^Race$/)).toHaveCount(0);
-    await expect(page.getByText(/^Composition$/)).toBeVisible();
+    await sceneCard(page, 'Composition').click();
+    await toggleStoryPlayback(page);
+    await page.waitForTimeout(700);
+    await toggleStoryPlayback(page);
+    await page.getByTestId('story-frame').screenshot({ path: screenshot('story-composition-16x9.png') });
+    await expect(page.getByTestId('story-frame').getByText(/^Composition$/)).toBeVisible();
     await expect(page.getByTestId('story-frame')).toBeVisible();
   });
 
@@ -156,7 +191,7 @@ test.describe('M2 Story Product', () => {
     await expect.poll(() => page.getByText(/Saved/i).count()).toBeGreaterThan(0);
     await expect.poll(() => state.stories.length).toBeGreaterThan(0);
 
-    await page.getByText(/My Reports|Mis Reportes/i).first().click();
+    await page.getByRole('button', { name: /My Reports|Mis reportes/i }).click();
     await expect(page.getByText(/^Stories$/)).toBeVisible();
     await expect(page.locator('.report-item').last()).toBeVisible();
     await page.locator('.report-item').last().click();
@@ -174,7 +209,7 @@ test.describe('M2 Story Product', () => {
 
     const publicPage = await context.newPage();
     await publicPage.goto(publicUrl!);
-    await expect(publicPage.getByRole('banner').getByText('Sphere Story')).toBeVisible();
+    await expect(publicPage.getByRole('banner').getByText('Story', { exact: true })).toBeVisible();
     await expect(publicPage.getByRole('button', { name: /^Play$/ })).toBeVisible();
     await expect(publicPage.getByTestId('story-frame')).toBeVisible();
 

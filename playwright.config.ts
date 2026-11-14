@@ -2,6 +2,11 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
+  globalSetup: './tests/e2e/global-setup.ts',
+  // The suite shares one Next server and includes CPU-heavy chart/file/video
+  // scenarios. More workers can starve browser workers and create false import
+  // or navigation failures that do not reproduce in the product.
+  workers: 2,
   timeout: 90_000,
   expect: {
     timeout: 10_000

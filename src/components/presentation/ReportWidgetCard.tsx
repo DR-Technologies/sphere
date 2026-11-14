@@ -14,6 +14,7 @@ interface ReportWidgetCardProps {
   children: React.ReactNode;
   toolbar?: React.ReactNode;
   error?: string | null;
+  errorAction?: React.ReactNode;
   titleOverride?: React.ReactNode;
   subtitleOverride?: React.ReactNode;
   style?: React.CSSProperties;
@@ -26,6 +27,7 @@ export default function ReportWidgetCard({
   children,
   toolbar,
   error,
+  errorAction,
   titleOverride,
   subtitleOverride,
   style
@@ -99,13 +101,16 @@ export default function ReportWidgetCard({
             style={{
               display: 'grid',
               placeItems: 'center',
+              alignContent: 'center',
+              gap: 10,
               minHeight: '100%',
               textAlign: 'center',
               color: '#fda4af',
               padding: '0 8px'
             }}
           >
-            {error}
+            <span>{error}</span>
+            {errorAction}
           </div>
         ) : (
           children

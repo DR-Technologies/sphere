@@ -12,6 +12,7 @@ interface StartExportBody {
   orientation: StoryOrientation;
   accessToken?: string;
   mockMode?: boolean;
+  cacheKey?: string;
 }
 
 export async function POST(request: NextRequest) {
@@ -35,7 +36,8 @@ export async function POST(request: NextRequest) {
     orientation: body.orientation,
     accessToken: body.accessToken,
     origin,
-    mockMode: body.mockMode
+    mockMode: body.mockMode,
+    cacheKey: body.cacheKey
   });
 
   return NextResponse.json({ ok: true, status: 'queued' }, { status: 202 });

@@ -103,6 +103,32 @@ describe('story playback', () => {
     expect(state.activeSceneId).toBe('scene-1');
     expect(state.isLastScene).toBe(true);
   });
+
+  it('keeps a five-scene Standard story near the 20-24 second product target', () => {
+    const kinds = ['intro', 'kpi', 'evolution', 'ranking', 'composition'] as const;
+    const fiveSceneStory: StoryDefinition = {
+      ...twoSceneStory,
+      scenes: kinds.map((kind, index) => ({
+        ...twoSceneStory.scenes[index === 0 ? 0 : 1],
+        id: `scene-${index + 1}`,
+        kind,
+        renderer: kind === 'intro'
+          ? 'hero-text'
+          : kind === 'kpi'
+            ? 'kpi-counter'
+            : kind === 'evolution'
+              ? 'line-evolution'
+              : kind === 'ranking'
+                ? 'bar-ranking'
+                : 'composition-evolution',
+        durationMode: 'auto',
+        durationMs: undefined
+      })) as StoryDefinition['scenes']
+    };
+
+    expect(getStoryTotalDuration(fiveSceneStory)).toBeGreaterThanOrEqual(20_000);
+    expect(getStoryTotalDuration(fiveSceneStory)).toBeLessThanOrEqual(24_000);
+  });
 });
 
 describe('story playback controller', () => {

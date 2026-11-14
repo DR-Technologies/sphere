@@ -12,6 +12,7 @@ import type {
   RaceSceneRenderModel,
   RankedDatum,
   RankingSceneRenderModel,
+  StoryLocale,
   StoryFrameState
 } from '@/lib/story/types';
 import { getTemplateTokens } from '@/lib/visualSystem';
@@ -24,8 +25,27 @@ interface PresentationRendererProps {
   frameState: StoryFrameState;
 }
 
-function formatMetricValue(value: number) {
-  return new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(value);
+function formatMetricValue(value: number, locale?: StoryLocale) {
+  return new Intl.NumberFormat(locale === 'en' ? 'en-US' : 'es-CO', { maximumFractionDigits: 0 }).format(value);
+}
+
+function getStoryCopy(locale: StoryLocale | undefined) {
+  if (locale === 'en') {
+    return {
+      evolution: 'Evolution',
+      ranking: 'Ranking',
+      race: 'Ranking evolution',
+      composition: 'Composition',
+      currentShare: 'Current share'
+    };
+  }
+  return {
+    evolution: 'Evolución',
+    ranking: 'Ranking',
+    race: 'Evolución de ranking',
+    composition: 'Composición',
+    currentShare: 'Participación actual'
+  };
 }
 
 function clamp01(value: number) {
@@ -54,7 +74,18 @@ function getStaggerProgress(progress: number, index: number, total: number) {
   return clamp01((progress - index * segment * 0.8) / Math.max(0.18, 1 - total * segment * 0.2));
 }
 
+function getTickIndices(length: number, maxTicks: number) {
+  if (length <= maxTicks) return Array.from({ length }, (_, index) => index);
+  const indices = new Set<number>();
+  for (let index = 0; index < maxTicks; index += 1) {
+    indices.add(Math.round((index * (length - 1)) / (maxTicks - 1)));
+  }
+  return Array.from(indices).sort((left, right) => left - right);
+}
+
 function IntroScene({ model, contentProgress }: { model: HeroSceneRenderModel; contentProgress: number }) {
+  const titleProgress = clamp01(contentProgress / 0.7);
+  const subtitleProgress = clamp01((contentProgress - 0.16) / 0.7);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 920 }}>
       {model.data.eyebrow && (
@@ -64,7 +95,8 @@ function IntroScene({ model, contentProgress }: { model: HeroSceneRenderModel; c
           textTransform: 'uppercase',
           color: 'var(--story-accent)',
           fontWeight: 700,
-          opacity: 0.7 + contentProgress * 0.3
+          opacity: 0.65 + titleProgress * 0.35,
+          transform: `translateY(${8 * (1 - titleProgress)}px)`
         }}
         >
           {model.data.eyebrow}
@@ -74,7 +106,9 @@ function IntroScene({ model, contentProgress }: { model: HeroSceneRenderModel; c
         margin: 0,
         fontSize: 'clamp(48px, 7vw, 96px)',
         lineHeight: 0.92,
-        letterSpacing: '-0.04em'
+        letterSpacing: '-0.04em',
+        opacity: titleProgress,
+        transform: `translateY(${18 * (1 - titleProgress)}px)`
       }}
       >
         {model.copy.title}
@@ -84,7 +118,9 @@ function IntroScene({ model, contentProgress }: { model: HeroSceneRenderModel; c
         fontSize: 'clamp(20px, 2vw, 30px)',
         lineHeight: 1.4,
         maxWidth: 780,
-        color: 'var(--story-muted)'
+        color: 'var(--story-muted)',
+        opacity: subtitleProgress,
+        transform: `translateY(${14 * (1 - subtitleProgress)}px)`
       }}
       >
         {model.copy.subtitle}
@@ -93,13 +129,14 @@ function IntroScene({ model, contentProgress }: { model: HeroSceneRenderModel; c
   );
 }
 
-function KpiScene({ model, contentProgress }: { model: KpiSceneRenderModel; contentProgress: number }) {
-  const animatedValue = model.data.metric.value * contentProgress;
+function KpiScene({ model, contentProgress, locale }: { model: KpiSceneRenderModel; contentProgress: number; locale?: StoryLocale }) {
+  const counterProgress = contentProgress * contentProgress * (3 - 2 * contentProgress);
+  const animatedValue = model.data.metric.value * counterProgress;
   const value = model.data.metric.format
-    ? formatStoryValue(animatedValue, model.data.metric.format)
+    ? formatStoryValue(animatedValue, model.data.metric.format, locale)
     : (model.data.metric.formattedValue && contentProgress >= 1
       ? model.data.metric.formattedValue
-      : formatMetricValue(Math.round(animatedValue)));
+      : formatMetricValue(Math.round(animatedValue), locale));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, width: '100%', maxWidth: 960 }}>
@@ -131,26 +168,55 @@ function KpiScene({ model, contentProgress }: { model: KpiSceneRenderModel; cont
   );
 }
 
-function LineScene({ model, width, height, contentProgress }: { model: LineSceneRenderModel; width: number; height: number; contentProgress: number }) {
-  const padding = { top: 32, right: 32, bottom: 58, left: 58 };
+function LineScene({
+  model,
+  width,
+  height,
+  contentProgress,
+  locale,
+  timeZone
+}: {
+  model: LineSceneRenderModel;
+  width: number;
+  height: number;
+  contentProgress: number;
+  locale?: StoryLocale;
+  timeZone?: string;
+}) {
+  const isPortrait = height > width;
+  const svgHeight = Math.max(260, height - (isPortrait ? 230 : 180));
+  const padding = isPortrait
+    ? { top: 30, right: 22, bottom: 70, left: 76 }
+    : { top: 34, right: 40, bottom: 64, left: 86 };
   const chartWidth = Math.max(100, width - padding.left - padding.right);
-  const chartHeight = Math.max(100, height - padding.top - padding.bottom);
-  const maxValue = Math.max(...model.data.points.map((point) => point.value), 1);
+  const chartHeight = Math.max(100, svgHeight - padding.top - padding.bottom);
+  const rawMin = Math.min(0, ...model.data.points.map((point) => point.value));
+  const rawMax = Math.max(0, ...model.data.points.map((point) => point.value));
+  const domainSpan = Math.max(1, rawMax - rawMin);
+  const minValue = rawMin;
   const points = model.data.points.map((point, index) => {
     const x = padding.left + (chartWidth * index) / Math.max(1, model.data.points.length - 1);
-    const y = padding.top + chartHeight - (point.value / maxValue) * chartHeight;
+    const y = padding.top + chartHeight - ((point.value - minValue) / domainSpan) * chartHeight;
     return { ...point, x, y };
   });
   const path = buildLinePath(points);
-  const focusIndex = Math.max(0, Math.min(points.length - 1, Math.round((points.length - 1) * contentProgress)));
+  const focusIndex = Math.max(0, Math.min(points.length - 1, Math.floor((points.length - 1) * contentProgress)));
   const focusPoint = points[focusIndex];
   const clipWidth = padding.left + chartWidth * contentProgress;
+  const baselineY = padding.top + chartHeight - ((0 - minValue) / domainSpan) * chartHeight;
+  const xTickIndices = getTickIndices(points.length, isPortrait ? 3 : 6);
+  const clipId = `story-line-clip-${model.sceneId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const fillId = `story-line-fill-${model.sceneId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const tooltipWidth = isPortrait ? 164 : 180;
+  const tooltipX = focusPoint ? Math.max(12, Math.min(width - tooltipWidth - 12, focusPoint.x - tooltipWidth / 2)) : 0;
+  const tooltipY = focusPoint ? Math.max(14, Math.min(svgHeight - 62, focusPoint.y - 70)) : 0;
+  const copy = getStoryCopy(locale);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, width: '100%', height: '100%' }}>
       <div>
         <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--story-accent)', marginBottom: 8 }}>
-          Evolution
+          {copy.evolution}
         </div>
         <h2 style={{ margin: 0, fontSize: 'clamp(32px, 4vw, 58px)', lineHeight: 0.95 }}>{model.copy.title}</h2>
         <p style={{ margin: '10px 0 0', color: 'var(--story-muted)', fontSize: 20 }}>{model.copy.subtitle}</p>
@@ -158,7 +224,7 @@ function LineScene({ model, width, height, contentProgress }: { model: LineScene
 
       <div style={{
         flex: 1,
-        minHeight: 320,
+        minHeight: isPortrait ? 360 : 300,
         borderRadius: 22,
         border: '1px solid var(--story-border)',
         background: 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))',
@@ -166,14 +232,14 @@ function LineScene({ model, width, height, contentProgress }: { model: LineScene
         overflow: 'hidden'
       }}
       >
-        <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <svg width="100%" height="100%" viewBox={`0 0 ${width} ${svgHeight}`} preserveAspectRatio="none" role="img" aria-label={model.copy.title}>
           <defs>
-            <linearGradient id="story-line-fill" x1="0%" y1="0%" x2="0%" y2="100%">
+            <linearGradient id={fillId} x1="0%" y1="0%" x2="0%" y2="100%">
               <stop offset="0%" stopColor="var(--story-accent)" stopOpacity="0.26" />
               <stop offset="100%" stopColor="var(--story-accent)" stopOpacity="0.02" />
             </linearGradient>
-            <clipPath id="story-line-clip">
-              <rect x="0" y="0" width={clipWidth} height={height} />
+            <clipPath id={clipId}>
+              <rect x="0" y="0" width={clipWidth} height={svgHeight} />
             </clipPath>
           </defs>
 
@@ -184,27 +250,29 @@ function LineScene({ model, width, height, contentProgress }: { model: LineScene
                 y1={padding.top + chartHeight - chartHeight * tick}
                 x2={padding.left + chartWidth}
                 y2={padding.top + chartHeight - chartHeight * tick}
-                stroke="rgba(255,255,255,0.08)"
+                stroke="var(--story-grid)"
                 strokeWidth="1"
               />
               <text
+                data-story-axis="y"
                 x={padding.left - 12}
                 y={padding.top + chartHeight - chartHeight * tick + 5}
                 textAnchor="end"
                 fontSize="13"
-                fill="var(--story-muted)"
+                fill="var(--story-axis)"
+                fontWeight="600"
               >
                 {model.data.valueFormat
-                  ? formatStoryValue(Math.round(maxValue * tick), model.data.valueFormat)
-                  : formatMetricValue(Math.round(maxValue * tick))}
+                  ? formatStoryValue(minValue + domainSpan * tick, model.data.valueFormat, locale)
+                  : formatMetricValue(minValue + domainSpan * tick, locale)}
               </text>
             </g>
           ))}
 
-          <g clipPath="url(#story-line-clip)">
+          <g clipPath={`url(#${clipId})`}>
             <path
-              d={`${path} L ${padding.left + chartWidth} ${padding.top + chartHeight} L ${padding.left} ${padding.top + chartHeight} Z`}
-              fill="url(#story-line-fill)"
+              d={`${path} L ${padding.left + chartWidth} ${baselineY} L ${padding.left} ${baselineY} Z`}
+              fill={`url(#${fillId})`}
               opacity={0.95}
             />
             <path
@@ -217,41 +285,48 @@ function LineScene({ model, width, height, contentProgress }: { model: LineScene
             />
           </g>
 
-          {points.map((point) => (
+          {xTickIndices.map((pointIndex) => {
+            const point = points[pointIndex];
+            const isFirstTick = pointIndex === xTickIndices[0];
+            const isLastTick = pointIndex === xTickIndices[xTickIndices.length - 1];
+            return (
             <text
+              data-story-axis="x"
               key={point.key}
               x={point.x}
-              y={height - 18}
-              textAnchor="middle"
-              fontSize="13"
-              fill="var(--story-muted)"
+              y={svgHeight - 24}
+              textAnchor={isFirstTick ? 'start' : isLastTick ? 'end' : 'middle'}
+              fontSize={isPortrait ? 14 : 15}
+              fill="var(--story-axis)"
+              fontWeight="600"
               opacity={point.x <= clipWidth + 1 ? 1 : 0.25}
             >
-              {point.label}
+              {formatStoryAxisLabel(point.key || point.label, { locale, timeZone })}
             </text>
-          ))}
+            );
+          })}
 
-          {focusPoint && (
+          {focusPoint && contentProgress > 0.03 && (
             <g>
               <circle cx={focusPoint.x} cy={focusPoint.y} r="8" fill="var(--story-accent)" />
               <circle cx={focusPoint.x} cy={focusPoint.y} r="16" fill="var(--story-accent)" opacity="0.18" />
               <rect
-                x={Math.max(18, focusPoint.x - 74)}
-                y={Math.max(20, focusPoint.y - 64)}
+                x={tooltipX}
+                y={tooltipY}
                 rx="14"
                 ry="14"
-                width="148"
-                height="46"
+                width={tooltipWidth}
+                height="52"
                 fill="rgba(9,15,28,0.84)"
                 stroke="rgba(255,255,255,0.12)"
               />
-              <text x={focusPoint.x} y={Math.max(48, focusPoint.y - 36)} textAnchor="middle" fontSize="12" fill="var(--story-muted)">
-                {formatStoryAxisLabel(focusPoint.label)}
+              <text x={tooltipX + tooltipWidth / 2} y={tooltipY + 19} textAnchor="middle" fontSize="12" fill="rgba(255,255,255,0.78)">
+                {formatStoryAxisLabel(focusPoint.key || focusPoint.label, { locale, timeZone })}
               </text>
-              <text x={focusPoint.x} y={Math.max(68, focusPoint.y - 16)} textAnchor="middle" fontSize="18" fill="white" fontWeight="700">
+              <text x={tooltipX + tooltipWidth / 2} y={tooltipY + 41} textAnchor="middle" fontSize="18" fill="white" fontWeight="700">
                 {model.data.valueFormat
-                  ? formatStoryValue(focusPoint.value, model.data.valueFormat)
-                  : formatMetricValue(focusPoint.value)}
+                  ? formatStoryValue(focusPoint.value, model.data.valueFormat, locale)
+                  : formatMetricValue(focusPoint.value, locale)}
               </text>
             </g>
           )}
@@ -266,25 +341,28 @@ function RankingScene({
   width,
   height,
   contentProgress,
-  palette
+  palette,
+  locale
 }: {
   model: RankingSceneRenderModel;
   width: number;
   height: number;
   contentProgress: number;
   palette: string[];
+  locale?: StoryLocale;
 }) {
   const isPortrait = height > width;
   const items = model.data.items.slice(0, isPortrait ? 5 : 7);
   const maxValue = Math.max(...items.map((item) => item.value), 1);
   const barAreaHeight = Math.max(isPortrait ? 320 : 260, height - (isPortrait ? 210 : 190));
   const barHeight = Math.min(isPortrait ? 56 : 64, Math.max(isPortrait ? 30 : 34, Math.floor(barAreaHeight / Math.max(1, items.length))));
+  const copy = getStoryCopy(locale);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, width: '100%', height: '100%' }}>
       <div>
         <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--story-accent)', marginBottom: 8 }}>
-          Ranking
+          {copy.ranking}
         </div>
         <h2 style={{ margin: 0, fontSize: isPortrait ? 'clamp(28px, 5vw, 42px)' : 'clamp(32px, 4vw, 58px)', lineHeight: 0.95, maxWidth: isPortrait ? 420 : 'none' }}>{model.copy.title}</h2>
         <p style={{ margin: '10px 0 0', color: 'var(--story-muted)', fontSize: isPortrait ? 16 : 20, maxWidth: isPortrait ? 420 : 'none' }}>{model.copy.subtitle}</p>
@@ -299,7 +377,9 @@ function RankingScene({
         padding: isPortrait ? '20px 18px 22px' : '28px 30px',
         display: 'grid',
         gap: isPortrait ? 12 : 14,
-        alignContent: 'start'
+        gridTemplateRows: `repeat(${Math.max(1, items.length)}, minmax(0, 1fr))`,
+        alignContent: 'stretch',
+        overflow: 'hidden'
       }}
       >
         {items.map((item, index) => {
@@ -308,7 +388,7 @@ function RankingScene({
           const color = item.color || getCategoryColor(item.key, palette);
 
           return (
-            <div key={item.key} style={{ display: 'grid', gap: 8 }}>
+            <div key={item.key} style={{ display: 'grid', gap: 8, alignContent: 'center', minHeight: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span style={{
@@ -327,7 +407,7 @@ function RankingScene({
                   <strong style={{ fontSize: isPortrait ? 15 : 18, maxWidth: isPortrait ? 180 : 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</strong>
                 </div>
                 <span style={{ color: 'var(--story-muted)', fontVariantNumeric: 'tabular-nums', fontSize: isPortrait ? 13 : 15 }}>
-                  {model.data.valueFormat ? formatStoryValue(item.value, model.data.valueFormat) : formatMetricValue(item.value)}
+                  {model.data.valueFormat ? formatStoryValue(item.value, model.data.valueFormat, locale) : formatMetricValue(item.value, locale)}
                 </span>
               </div>
               <div style={{ height: barHeight, borderRadius: 14, background: 'rgba(255,255,255,0.05)', overflow: 'hidden', position: 'relative' }}>
@@ -396,26 +476,29 @@ function RaceScene({
   width,
   height,
   contentProgress,
-  palette
+  palette,
+  locale
 }: {
   model: RaceSceneRenderModel;
   width: number;
   height: number;
   contentProgress: number;
   palette: string[];
+  locale?: StoryLocale;
 }) {
   const isPortrait = height > width;
   const race = interpolateRaceItems(model, contentProgress, palette);
   const maxValue = Math.max(1, ...race.items.map((item) => item.value || 0));
   const visibleItems = race.items.slice(0, isPortrait ? 4 : 5);
   const barHeight = Math.max(isPortrait ? 34 : 42, Math.min(isPortrait ? 56 : 74, Math.floor((height - (isPortrait ? 260 : 230)) / Math.max(1, visibleItems.length))));
+  const copy = getStoryCopy(locale);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, width: '100%', height: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: isPortrait ? 'flex-start' : 'end', flexWrap: 'wrap', flexDirection: isPortrait ? 'column' : 'row' }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--story-accent)', marginBottom: 8 }}>
-            Race
+            {copy.race}
           </div>
           <h2 style={{ margin: 0, fontSize: isPortrait ? 'clamp(26px, 5vw, 38px)' : 'clamp(30px, 4vw, 56px)', lineHeight: 0.95, maxWidth: isPortrait ? 420 : 'none' }}>{model.copy.title}</h2>
           <p style={{ margin: '10px 0 0', color: 'var(--story-muted)', fontSize: isPortrait ? 16 : 20, maxWidth: isPortrait ? 420 : 'none' }}>{model.copy.subtitle}</p>
@@ -470,7 +553,7 @@ function RaceScene({
                   <strong style={{ fontSize: isPortrait ? 15 : 18, maxWidth: isPortrait ? 170 : 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</strong>
                 </div>
                 <span style={{ color: 'white', fontWeight: 700, fontVariantNumeric: 'tabular-nums', fontSize: isPortrait ? 13 : 15 }}>
-                  {model.data.valueFormat ? formatStoryValue(numericValue, model.data.valueFormat) : formatMetricValue(numericValue)}
+                  {model.data.valueFormat ? formatStoryValue(numericValue, model.data.valueFormat, locale) : formatMetricValue(numericValue, locale)}
                 </span>
               </div>
               <div style={{ height: barHeight, borderRadius: 14, background: 'rgba(255,255,255,0.05)', overflow: 'hidden' }}>
@@ -544,15 +627,18 @@ function CompositionScene({
   width,
   height,
   contentProgress,
-  palette
+  palette,
+  locale
 }: {
   model: CompositionSceneRenderModel;
   width: number;
   height: number;
   contentProgress: number;
   palette: string[];
+  locale?: StoryLocale;
 }) {
   const frame = interpolateCompositionFrame(model, contentProgress, palette);
+  const copy = getStoryCopy(locale);
 
   return (
     <div
@@ -567,7 +653,7 @@ function CompositionScene({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--story-accent)', marginBottom: 8 }}>
-            Composition
+            {copy.composition}
           </div>
           <h2 style={{ margin: 0, fontSize: 'clamp(30px, 4vw, 56px)', lineHeight: 0.95 }}>{model.copy.title}</h2>
           <p style={{ margin: '10px 0 0', color: 'var(--story-muted)', fontSize: 20 }}>{model.copy.subtitle}</p>
@@ -578,13 +664,15 @@ function CompositionScene({
           border: '1px solid var(--story-border)',
           background: 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))',
           padding: width > height ? '28px' : '24px',
-          display: 'grid',
+          display: 'flex',
+          flexDirection: 'column',
           gap: 18,
-          minHeight: height > width ? 280 : 260
+          minHeight: height > width ? 280 : 260,
+          justifyContent: 'center'
         }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-            <strong style={{ fontSize: 18 }}>Participación actual</strong>
+            <strong style={{ fontSize: 18 }}>{copy.currentShare}</strong>
             <span style={{ color: 'var(--story-accent)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{frame.label}</span>
           </div>
           <div style={{ height: 64, borderRadius: 14, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', display: 'flex' }}>
@@ -613,7 +701,8 @@ function CompositionScene({
         padding: '22px 20px',
         display: 'grid',
         gap: 12,
-        alignContent: 'start'
+        alignContent: 'center',
+        gridTemplateColumns: width > height ? '1fr' : 'repeat(2, minmax(0, 1fr))'
       }}
       >
         {frame.items.map((item) => (
@@ -628,7 +717,7 @@ function CompositionScene({
               </span>
             </div>
             <span style={{ color: 'var(--story-muted)', fontSize: 14 }}>
-              {model.data.valueFormat ? formatStoryValue(item.value || 0, model.data.valueFormat) : formatMetricValue(item.value || 0)}
+              {model.data.valueFormat ? formatStoryValue(item.value || 0, model.data.valueFormat, locale) : formatMetricValue(item.value || 0, locale)}
             </span>
           </div>
         ))}
@@ -649,12 +738,16 @@ function SceneLayer({
   width,
   height,
   layer,
-  palette
+  palette,
+  locale,
+  timeZone
 }: {
   width: number;
   height: number;
   layer: ReturnType<typeof resolveVisibleSceneLayers>[number];
   palette: string[];
+  locale?: StoryLocale;
+  timeZone?: string;
 }) {
   const { scene, opacity, translateY, scale, contentProgress } = layer;
   const model = scene.renderModel;
@@ -678,7 +771,7 @@ function SceneLayer({
         opacity,
         transform: `translateY(${translateY}px) scale(${scale})`,
         transformOrigin: 'center center',
-        filter: isExiting ? `blur(${Math.min(6, layer.playback.transitionProgress * 6)}px)` : 'none',
+        filter: isExiting ? `blur(${Math.min(2, layer.playback.transitionProgress * 2)}px)` : 'none',
         display: 'flex',
         alignItems: model.layout === 'hero' ? 'center' : 'stretch',
         justifyContent: 'center'
@@ -689,19 +782,19 @@ function SceneLayer({
         <IntroScene model={model as HeroSceneRenderModel} contentProgress={contentProgress} />
       ) : null}
       {!scene.emptyState && model.renderer === 'kpi-counter' ? (
-        <KpiScene model={model as KpiSceneRenderModel} contentProgress={contentProgress} />
+        <KpiScene model={model as KpiSceneRenderModel} contentProgress={contentProgress} locale={locale} />
       ) : null}
       {!scene.emptyState && model.renderer === 'line-evolution' ? (
-        <LineScene model={model as LineSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} />
+        <LineScene model={model as LineSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} locale={locale} timeZone={timeZone} />
       ) : null}
       {!scene.emptyState && model.renderer === 'bar-ranking' ? (
-        <RankingScene model={model as RankingSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} palette={palette} />
+        <RankingScene model={model as RankingSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} palette={palette} locale={locale} />
       ) : null}
       {!scene.emptyState && model.renderer === 'bar-race' ? (
-        <RaceScene model={model as RaceSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} palette={palette} />
+        <RaceScene model={model as RaceSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} palette={palette} locale={locale} />
       ) : null}
       {!scene.emptyState && model.renderer === 'composition-evolution' ? (
-        <CompositionScene model={model as CompositionSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} palette={palette} />
+        <CompositionScene model={model as CompositionSceneRenderModel} width={sceneWidth} height={sceneHeight} contentProgress={contentProgress} palette={palette} locale={locale} />
       ) : null}
     </div>
   );
@@ -755,6 +848,8 @@ export default function PresentationRenderer({
         style={{
           '--story-accent': template.accent,
           '--story-muted': template.mutedText,
+          '--story-axis': template.text,
+          '--story-grid': template.border,
           '--story-border': template.border,
           '--story-border-strong': template.borderStrong,
           '--story-shadow-glow': `0 24px 48px ${template.glow}`
@@ -767,6 +862,8 @@ export default function PresentationRenderer({
             height={height}
             layer={layer}
             palette={template.chartColors}
+            locale={story.locale}
+            timeZone={story.timeZone}
           />
         ))}
       </div>

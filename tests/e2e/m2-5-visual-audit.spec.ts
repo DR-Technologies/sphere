@@ -63,7 +63,7 @@ async function openPublicReport(page: Page, context: BrowserContext) {
   expect(href).toBeTruthy();
   const publicPage = await context.newPage();
   await publicPage.goto(href!);
-  await expect(publicPage.getByText(/Sphere Public/i)).toBeVisible();
+  await expect(publicPage.getByText('Public', { exact: true })).toBeVisible();
   return publicPage;
 }
 
@@ -82,7 +82,7 @@ async function openPublicStory(page: Page, context: BrowserContext) {
   expect(href).toBeTruthy();
   const publicPage = await context.newPage();
   await publicPage.goto(href!);
-  await expect(publicPage.getByRole('banner').getByText(/Sphere Story/i)).toBeVisible();
+  await expect(publicPage.getByRole('banner').getByText('Story', { exact: true })).toBeVisible();
   return publicPage;
 }
 
@@ -438,7 +438,7 @@ test.describe('M2.5A Visual Audit Baseline', () => {
     );
 
     await page.goto('/');
-    await page.getByText(/My Reports|Mis Reportes/i).first().click();
+    await page.getByRole('button', { name: /My Reports|Mis reportes/i }).click();
     await expect(page.getByText(/^Stories$/)).toBeVisible();
     await page.locator('.report-item').last().click();
     await expect(page.getByText(/Story Mode/i)).toBeVisible();
