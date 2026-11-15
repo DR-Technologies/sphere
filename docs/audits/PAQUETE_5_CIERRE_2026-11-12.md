@@ -1,7 +1,83 @@
 # PAQUETE 5 - Cierre de estabilizacion y seguridad
 
-Fecha de ultima verificacion: 2026-11-14
-Estado: **NO-GO - BLOQUEO CDN P0**
+Fecha de ultima verificacion: 2026-11-15
+Estado: **PAQUETE 5 CERRADO - GO PARA ALPHA CERRADA**
+
+## Limpieza definitiva de Supabase Development
+
+El 15/11/2026 se ejecuto la puesta en cero autorizada exclusivamente sobre el
+proyecto Development `dsbbybsybtlpyriwdmla`. Antes de eliminar se verificaron
+el proyecto, ownership, dependencias y usuarios, y se respaldaron fuera de Git
+los 28 objetos Storage con verificacion SHA-256 (`28/28 PASS`, 57.329.446
+bytes). El backup logico recuperable del 14/11/2026 permanece disponible.
+
+Se eliminaron mediante los RPC lifecycle y la API oficial de Storage:
+
+- 2 datasets y sus 2 tablas analiticas generadas;
+- 4 reports y 2 snapshots/publicaciones;
+- 1 Story;
+- 1 sesion de importacion y 103 chunks;
+- 28 objetos del bucket privado `files`;
+- 2.787 filas historicas de prueba en 27 tablas de cuarentena.
+
+Las 27 tablas de cuarentena se conservaron estructuralmente y quedaron vacias.
+No se ejecuto `DROP`, `TRUNCATE`, reset de esquema ni modificacion de funciones,
+triggers, RLS, cron o historial de migraciones.
+
+### Estado final de datos
+
+| Objeto | Conteo final |
+| --- | ---: |
+| datasets | 0 |
+| reports | 0 |
+| Stories | 0 |
+| public report snapshots | 0 |
+| public story snapshots | 0 |
+| story export jobs | 0 |
+| sync sessions | 0 |
+| sync chunks | 0 |
+| sync cleanup log | 0 |
+| objetos Storage `files` | 0 |
+| tablas analiticas generadas en `public` | 0 |
+| filas en las 27 tablas de cuarentena | 0 |
+
+### Usuarios conservados
+
+- Dayana Valero Zarraga:
+  `9d55e891-07e7-4699-9049-2e5f8ce787b7`, `superadmin`, `active`;
+- Rafael Donado:
+  `d4c2518e-cf23-45d2-8b59-491332b5999c`, rol estandar implicito existente.
+
+Supabase Auth contiene exactamente estas dos cuentas. No se alteraron sus
+perfiles, ownership ni permisos. La sesion temporal usada para ejecutar los RPC
+lifecycle fue revocada al finalizar.
+
+### Seguridad y operacion vacia
+
+- bucket `files`: privado y con 0 objetos;
+- RLS activo en las 7 tablas privadas de producto;
+- guards restrictivos de cuenta activa intactos;
+- 4 policies de Storage intactas;
+- acceso anonimo a datasets: denegado;
+- slugs publicados anteriores: sin contenido accesible;
+- cron `sphere-cleanup-abandoned-normalized-sync`: activo;
+- UI autenticada: datasets, reports y Stories vacios, sin errores de consola,
+  page errors ni respuestas HTTP 500.
+
+Las dos URLs CDN legacy pertenecian a archivos de prueba. Por decision explicita
+de producto se conservan solamente como evidencia historica y no bloquean este
+cierre.
+
+### Gates posteriores a la limpieza
+
+- unit/acceptance: 127 passed, 11 skipped por entorno;
+- typecheck: PASS;
+- ESLint `--quiet`: PASS;
+- build compatible del paquete: PASS;
+- E2E: todos los 36 escenarios cubiertos; una carrera del harness mock se
+  reprodujo una vez y paso en reintento aislado (1/1) y al repetir todo el
+  archivo afectado (11/11);
+- verificacion post-tests: todos los conteos remotos continuan en cero.
 
 ## Correccion final de seguridad
 
@@ -39,7 +115,7 @@ trigger transaccional, y refuerza `run_dataset_query` y
 Las tablas internas exclusivas de `service_role` permanecen sin grants para
 `anon`/`authenticated`; por ello no forman una ruta de acceso cliente.
 
-### Bloqueo CDN P0
+### URLs legacy CDN (registro historico aceptado)
 
 Las dos URLs originales de manifests se comprobaron sin query strings ni
 variantes. Ambas continuan entregando HTTP 206 desde cache (`CF-Cache-Status:
@@ -51,9 +127,9 @@ de purge por objeto, `DELETE /storage/v1/cdn/files/{exact-object-path}`. Supabas
 respondio para ambos objetos `403 FeatureNotEnabled`. Tras 90 segundos las URLs
 exactas continuaron en `206 HIT`.
 
-No se borraron ni movieron objetos para forzar invalidacion. Para cerrar el P0
-se requiere habilitar purge CDN en Development o solicitar a Supabase la
-invalidacion de esos dos paths y repetir la comprobacion exacta.
+La limpieza posterior elimino los objetos de origen mediante la API oficial de
+Storage. Por instruccion expresa, las respuestas cacheadas de esas dos URLs se
+ignoran y no forman parte del criterio de cierre del Paquete 5.
 
 ### Integridad post-forward-fix
 
@@ -88,10 +164,9 @@ Las evidencias privadas se guardaron fuera de Git en
 
 ### Veredicto actual
 
-**NO-GO para Alpha cerrada.** La proteccion P0 de cuentas suspendidas esta
-resuelta y los datos permanecen integros. El Paquete 5 no puede declararse
-formalmente cerrado mientras las dos URLs publicas legacy sigan entregando
-manifests desde CDN.
+**PAQUETE 5 CERRADO - GO PARA ALPHA CERRADA.** Development conserva estructura,
+seguridad y las dos cuentas autorizadas, y no contiene datos funcionales de
+prueba. No se realizo ningun cambio en Produccion ni deploy publico.
 
 ## Registro historico previo a la aplicacion
 
