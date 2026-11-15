@@ -80,4 +80,13 @@ blob-report/
 artifacts/
 supabase/.temp/
 
+# Local review packages, database backups, and recovery artifacts
+*.zip
+*.dump
+*.backup
+*.bak
+backups/
+SphereBackups/
+SPHERE_PAQUETE_5_REVISION/
+
 **/.DS_Store
