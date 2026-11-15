@@ -1,7 +1,99 @@
 # PAQUETE 5 - Cierre de estabilizacion y seguridad
 
-Fecha: 2026-11-12
-Estado: FASE 1 COMPLETA; FASES 2 Y 3 PENDIENTES DE AUTORIZACION
+Fecha de ultima verificacion: 2026-11-14
+Estado: **NO-GO - BLOQUEO CDN P0**
+
+## Correccion final de seguridad
+
+La migracion base `20261111_security_hardening.sql` y el forward-fix
+`20261115_suspended_account_security_forward_fix.sql` fueron aplicados una sola
+vez exclusivamente a Supabase Development. No se modifico Produccion y no se
+realizo deploy a Netlify.
+
+Versiones verificadas:
+
+- codigo compatible: `2080248`;
+- forward-fix: `f3acd2966c9c3b68f9047153ad6da6db30dd4a01`;
+- SHA-256 forward-fix:
+  `e528fc383f0585d5fa623a3418ff3be71a4f9cf1bd2a19b7db8d2900e5c77696`.
+
+### Cuentas suspendidas
+
+El forward-fix agrega politicas restrictivas de cuenta activa a todas las tablas
+privadas accesibles por usuarios autenticados y a las tablas analiticas actuales
+y futuras. Tambien bloquea mutaciones de RPC `SECURITY DEFINER` mediante un
+trigger transaccional, y refuerza `run_dataset_query` y
+`get_dataset_delete_dependencies` con `ACCOUNT_SUSPENDED`.
+
+| Prueba | Resultado |
+| --- | --- |
+| Usuario activo consulta sus entidades privadas | PASS |
+| Sesion emitida antes de suspension consulta datasets/reports/stories | PASS - 0 filas |
+| Sesion suspendida consulta tabla analitica | PASS - 0 filas |
+| Sesion suspendida ejecuta `run_dataset_query` | PASS - SQLSTATE `42501` |
+| Sesion suspendida ejecuta dependencia/mutacion lifecycle | PASS - bloqueada transaccionalmente |
+| Usuario A consulta recursos de B | PASS - denegado por owner RLS |
+| Anon consulta `datasets` | PASS - HTTP 401 |
+| Publicacion activa por slug | PASS - HTTP 200 |
+
+Las tablas internas exclusivas de `service_role` permanecen sin grants para
+`anon`/`authenticated`; por ello no forman una ruta de acceso cliente.
+
+### Bloqueo CDN P0
+
+Las dos URLs originales de manifests se comprobaron sin query strings ni
+variantes. Ambas continuan entregando HTTP 206 desde cache (`CF-Cache-Status:
+HIT`) aunque el bucket `files` ya es privado.
+
+Se actualizaron los objetos en el mismo path con bytes identicos y
+`cacheControl=0`; sus SHA-256 no cambiaron. Luego se invoco el mecanismo oficial
+de purge por objeto, `DELETE /storage/v1/cdn/files/{exact-object-path}`. Supabase
+respondio para ambos objetos `403 FeatureNotEnabled`. Tras 90 segundos las URLs
+exactas continuaron en `206 HIT`.
+
+No se borraron ni movieron objetos para forzar invalidacion. Para cerrar el P0
+se requiere habilitar purge CDN en Development o solicitar a Supabase la
+invalidacion de esos dos paths y repetir la comprobacion exacta.
+
+### Integridad post-forward-fix
+
+Los registros remotos se compararon con el backup restaurado mediante SHA-256
+canonico, normalizando solamente timestamps UTC equivalentes.
+
+| Objeto | Resultado |
+| --- | --- |
+| datasets (2) | PASS - fingerprint igual |
+| reports (4) | PASS - fingerprint igual |
+| public report snapshots (2) | PASS - fingerprint igual |
+| stories (1) | PASS - fingerprint igual |
+| public story snapshots (0) | PASS |
+| story export jobs (0) | PASS |
+| Dataset grande | PASS - 514.704 filas, 14 columnas, checksum `07208b1452b8bf4f01382a4446b9a00a` |
+| Dataset pequeno | PASS - 28 filas, 20 columnas |
+
+### Quality gates finales
+
+| Gate | Resultado |
+| --- | --- |
+| Unit/acceptance | PASS - 127 passed, 11 skipped por entorno |
+| Forward-fix focused | PASS - 12/12 |
+| Typecheck | PASS |
+| Build | PASS |
+| ESLint | PASS - 0 errores, 74 warnings historicos |
+| E2E completo serial | PASS - 36/36 |
+| `npm audit` | PASS - 0 vulnerabilidades |
+
+Las evidencias privadas se guardaron fuera de Git en
+`/Users/dayana/SphereBackups/package-5/2026-11-14-security-hardening-application/`.
+
+### Veredicto actual
+
+**NO-GO para Alpha cerrada.** La proteccion P0 de cuentas suspendidas esta
+resuelta y los datos permanecen integros. El Paquete 5 no puede declararse
+formalmente cerrado mientras las dos URLs publicas legacy sigan entregando
+manifests desde CDN.
+
+## Registro historico previo a la aplicacion
 
 ## Limite de esta ejecucion
 
